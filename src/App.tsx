@@ -59,6 +59,9 @@ export const App: React.FC = () => {
 
   const [apiKey, setApiKey] = useState<string>('');
   const [summary, setSummary] = useState<string>('');
+  const [savePath, setSavePath] = useState<string>(() => {
+    return localStorage.getItem('save_data_path') || '';
+  });
 
   // Comparison Page State elevated to survive tab switches but cleared on refresh
   const [compSelectedFunds, setCompSelectedFunds] = useState<PinnedFund[]>([]);
@@ -75,20 +78,52 @@ export const App: React.FC = () => {
   });
 
   useEffect(() => {
-    fetchLocalConfig().then(cfg => {
+    fetchLocalConfig(savePath).then(cfg => {
       setApiKey(cfg.apiKey || '');
       setSummary(cfg.summary || '');
+      if (cfg.pinnedSchemes && cfg.pinnedSchemes.length > 0) {
+        setPinnedSchemeCodes(cfg.pinnedSchemes);
+      }
+      if (!savePath) {
+        setTimeout(() => {
+          showToast('Save link not set, set from developer controls.');
+        }, 1500);
+      }
     });
-  }, []);
+  }, [savePath]);
 
   const handleSaveApiKey = async (newKey: string) => {
     setApiKey(newKey);
-    await saveLocalConfig(newKey, summary);
+    const success = await saveLocalConfig(newKey, summary, pinnedSchemeCodes, savePath);
+    if (!success && !savePath) {
+      showToast('Save link not set, set from developer controls.');
+    }
   };
 
   const handleUpdateSummary = async (newSummary: string) => {
     setSummary(newSummary);
-    await saveLocalConfig(apiKey, newSummary);
+    const success = await saveLocalConfig(apiKey, newSummary, pinnedSchemeCodes, savePath);
+    if (!success && !savePath) {
+      showToast('Save link not set, set from developer controls.');
+    }
+  };
+
+  const handleSavePath = async (newPath: string) => {
+    localStorage.setItem('save_data_path', newPath);
+    setSavePath(newPath);
+    try {
+      const cfg = await fetchLocalConfig(newPath);
+      setApiKey(cfg.apiKey || '');
+      setSummary(cfg.summary || '');
+      if (cfg.pinnedSchemes && cfg.pinnedSchemes.length > 0) {
+        setPinnedSchemeCodes(cfg.pinnedSchemes);
+      } else {
+        await saveLocalConfig(apiKey, summary, pinnedSchemeCodes, newPath);
+      }
+      showToast('Save path updated and configuration synchronized.');
+    } catch (err) {
+      showToast('Save path updated. Error syncing configuration.');
+    }
   };
 
   // Search autocomplete in top bar
@@ -97,14 +132,18 @@ export const App: React.FC = () => {
   const [isSearching, setIsSearching] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
 
-  // Sync to localStorage
+  // Sync pinned schemes to storage
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(pinnedSchemeCodes));
     } catch (e) {
       console.error('Failed to write pinned codes to localStorage', e);
     }
-  }, [pinnedSchemeCodes]);
+
+    if (savePath) {
+      saveLocalConfig(apiKey, summary, pinnedSchemeCodes, savePath);
+    }
+  }, [pinnedSchemeCodes, savePath, apiKey, summary]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -140,10 +179,18 @@ export const App: React.FC = () => {
   const handleTogglePin = (schemeCode: number) => {
     if (pinnedSchemeCodes.includes(schemeCode)) {
       setPinnedSchemeCodes(prev => prev.filter(c => c !== schemeCode));
-      showToast('Removed from pinned list');
+      if (!savePath) {
+        showToast('Removed from pinned list. Save link not set, set from developer controls.');
+      } else {
+        showToast('Removed from pinned list.');
+      }
     } else {
       setPinnedSchemeCodes(prev => [...prev, schemeCode]);
-      showToast('Added to pinned list');
+      if (!savePath) {
+        showToast('Added to pinned list. Save link not set, set from developer controls.');
+      } else {
+        showToast('Added to pinned list.');
+      }
     }
   };
 
@@ -434,6 +481,8 @@ export const App: React.FC = () => {
             <Page5DeveloperControls
               apiKey={apiKey}
               onSaveApiKey={handleSaveApiKey}
+              savePath={savePath}
+              onSavePath={handleSavePath}
             />
           )}
         </main>

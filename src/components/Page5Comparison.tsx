@@ -11,7 +11,7 @@ import {
   CartesianGrid
 } from 'recharts';
 import { PinnedFund, MFSearchResult } from '../types/mf';
-import { fetchFundDetail, searchSchemes, fetchAllSchemes } from '../services/amfiApi';
+import { fetchFundDetail, searchSchemes, fetchAllSchemes, interpolateMissingData } from '../services/amfiApi';
 
 interface PortfolioData {
   assetAllocation: {
@@ -66,16 +66,7 @@ const DEFAULT_PORTFOLIOS: { [code: number]: PortfolioData } = {
       { company: 'Tata Power Company Ltd.', weight: 4.9, instrument: 'Commercial Paper' }
     ]
   },
-  120194: { // Kotak Money Market
-    assetAllocation: { cash: 1.9, cd: 42.0, cp: 39.5, gsec: 5.5, tbills: 6.8, corpDebt: 4.3 },
-    topHoldings: [
-      { company: 'ICICI Bank Ltd.', weight: 8.9, instrument: 'Certificate of Deposit' },
-      { company: 'NABARD', weight: 8.1, instrument: 'Certificate of Deposit' },
-      { company: 'Government of India', weight: 6.8, instrument: 'Treasury Bills' },
-      { company: 'Bajaj Finance Ltd.', weight: 5.8, instrument: 'Commercial Paper' },
-      { company: 'Power Finance Corp.', weight: 5.0, instrument: 'Commercial Paper' }
-    ]
-  },
+
   119800: { // Nippon India Money Market
     assetAllocation: { cash: 3.5, cd: 34.0, cp: 46.5, gsec: 4.2, tbills: 7.8, corpDebt: 4.0 },
     topHoldings: [
@@ -457,9 +448,10 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
       });
     });
 
-    return Array.from(dateMap.values()).sort(
+    const sortedData = Array.from(dateMap.values()).sort(
       (a, b) => a.parsedDate.getTime() - b.parsedDate.getTime()
     );
+    return interpolateMissingData(sortedData, activeFunds.map(f => f.schemeName));
   }, [selectedFunds, visibleFunds, comparisonMetric, startDate, endDate]);
 
   const colors = ['#2563eb', '#10b981', '#f59e0b'];

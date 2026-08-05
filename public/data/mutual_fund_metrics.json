@@ -33,14 +33,7 @@
       "30-07-2026": { "aumCr": 18450.0, "expenseRatio": 0.35 }
     }
   },
-  "120194": {
-    "name": "Kotak Money Market Scheme",
-    "aumCr": 16210.0,
-    "expenseRatio": 0.32,
-    "historical": {
-      "30-07-2026": { "aumCr": 16210.0, "expenseRatio": 0.32 }
-    }
-  },
+
   "119800": {
     "name": "Nippon India Money Market Fund",
     "aumCr": 12890.0,

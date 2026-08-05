@@ -22,7 +22,7 @@ import {
   CartesianGrid
 } from 'recharts';
 import { PinnedFund } from '../types/mf';
-import { getNavOnDate, formatDateDisplay } from '../services/amfiApi';
+import { getNavOnDate, formatDateDisplay, interpolateMissingData } from '../services/amfiApi';
 
 interface Page1Props {
   pinnedFunds: PinnedFund[];
@@ -100,9 +100,10 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({
       });
     });
 
-    return Array.from(dateMap.values()).sort(
+    const sortedData = Array.from(dateMap.values()).sort(
       (a, b) => a.parsedDate.getTime() - b.parsedDate.getTime()
     );
+    return interpolateMissingData(sortedData, pinnedFunds.map(f => f.schemeName));
   }, [pinnedFunds, timeframe, chartMode]);
 
   const topReturnFund = useMemo(() => {

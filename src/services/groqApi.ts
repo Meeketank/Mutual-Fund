@@ -75,36 +75,67 @@ Overall Insight: ...`;
   return result.choices?.[0]?.message?.content || 'No summary generated.';
 }
 
-export async function fetchLocalConfig(): Promise<{ apiKey: string; summary: string }> {
-  try {
-    const res = await fetch('/api/config');
-    if (res.ok) {
-      return await res.json();
+export async function fetchLocalConfig(savePath: string): Promise<{ apiKey: string; summary: string; pinnedSchemes: number[] }> {
+  if (savePath) {
+    try {
+      const res = await fetch(`/api/config?path=${encodeURIComponent(savePath)}`);
+      if (res.ok) {
+        const data = await res.json();
+        return {
+          apiKey: data.apiKey || '',
+          summary: data.summary || '',
+          pinnedSchemes: Array.isArray(data.pinnedSchemes) ? data.pinnedSchemes : []
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to fetch local configuration from backend middleware', e);
     }
-  } catch (e) {
-    console.warn('Failed to fetch local configuration from backend middleware', e);
   }
-  
+
   // Fallback to localStorage
-  return {
-    apiKey: localStorage.getItem('groq_api_key') || '',
-    summary: localStorage.getItem('groq_latest_summary') || ''
-  };
+  try {
+    const storedPinned = localStorage.getItem('amfi_pinned_scheme_codes_v1');
+    return {
+      apiKey: localStorage.getItem('groq_api_key') || '',
+      summary: localStorage.getItem('groq_latest_summary') || '',
+      pinnedSchemes: storedPinned ? JSON.parse(storedPinned) : []
+    };
+  } catch (e) {
+    return {
+      apiKey: localStorage.getItem('groq_api_key') || '',
+      summary: localStorage.getItem('groq_latest_summary') || '',
+      pinnedSchemes: []
+    };
+  }
 }
 
-export async function saveLocalConfig(apiKey: string, summary: string): Promise<void> {
+export async function saveLocalConfig(
+  apiKey: string,
+  summary: string,
+  pinnedSchemes: number[],
+  savePath: string
+): Promise<boolean> {
+  // Sync to localStorage as fallback
   localStorage.setItem('groq_api_key', apiKey);
   localStorage.setItem('groq_latest_summary', summary);
+  localStorage.setItem('amfi_pinned_scheme_codes_v1', JSON.stringify(pinnedSchemes));
+
+  if (!savePath) {
+    return false; // Indicates path not set, did not write to server path
+  }
 
   try {
-    await fetch('/api/config', {
+    const res = await fetch('/api/config', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ apiKey, summary })
+      body: JSON.stringify({ apiKey, summary, pinnedSchemes, path: savePath })
     });
+    return res.ok;
   } catch (e) {
     console.error('Failed to write configuration to local JSON file via middleware', e);
+    return false;
   }
 }
+

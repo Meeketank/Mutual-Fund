@@ -1,36 +1,74 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Key, FileText, CheckCircle, HelpCircle, Eye, EyeOff, User, Mail } from 'lucide-react';
+import { Sliders, Key, FileText, CheckCircle, HelpCircle, Eye, EyeOff, User, Mail, AlertTriangle } from 'lucide-react';
 
 interface Page5Props {
   apiKey: string;
   onSaveApiKey: (newKey: string) => Promise<void>;
+  savePath: string;
+  onSavePath: (newPath: string) => Promise<void>;
 }
 
 export const Page5DeveloperControls: React.FC<Page5Props> = ({
   apiKey,
-  onSaveApiKey
+  onSaveApiKey,
+  savePath,
+  onSavePath
 }) => {
   const [keyInput, setKeyInput] = useState(apiKey);
   const [showKey, setShowKey] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [keyError, setKeyError] = useState<string | null>(null);
+
+  const [pathInput, setPathInput] = useState(savePath);
+  const [isSavingPath, setIsSavingPath] = useState(false);
+  const [pathSaveSuccess, setPathSaveSuccess] = useState(false);
+  const [pathError, setPathError] = useState<string | null>(null);
 
   // Sync state if prop changes
   useEffect(() => {
     setKeyInput(apiKey);
   }, [apiKey]);
 
+  useEffect(() => {
+    setPathInput(savePath);
+  }, [savePath]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!savePath) {
+      setKeyError('Save link not set, set from developer controls.');
+      return;
+    }
+    setKeyError(null);
     setIsSaving(true);
     try {
       await onSaveApiKey(keyInput);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      setKeyError(err.message || 'Failed to save key');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handlePathSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pathInput.trim()) {
+      setPathError('Path cannot be empty');
+      return;
+    }
+    setPathError(null);
+    setIsSavingPath(true);
+    try {
+      await onSavePath(pathInput.trim());
+      setPathSaveSuccess(true);
+      setTimeout(() => setPathSaveSuccess(false), 3000);
+    } catch (err: any) {
+      setPathError(err.message || 'Failed to save path');
+    } finally {
+      setIsSavingPath(false);
     }
   };
 
@@ -47,6 +85,24 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
           Configure API credentials, inspect system local configuration files, and check system status.
         </p>
       </div>
+
+      {!savePath && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          padding: '12px 16px',
+          backgroundColor: '#fffbeb',
+          border: '1px solid #fef3c7',
+          borderRadius: 'var(--radius-md)',
+          color: '#b45309',
+          fontSize: '0.82rem',
+          fontWeight: 600
+        }}>
+          <AlertTriangle size={18} style={{ color: '#d97706', flexShrink: 0 }} />
+          <span>Save link not set! Please configure the local save path below to persist API credentials and pinned schemes.</span>
+        </div>
+      )}
 
       <div className="panel-grid-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>
         {/* API Credentials Card */}
@@ -89,6 +145,12 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
               </div>
             </div>
 
+            {keyError && (
+              <div style={{ color: '#ef4444', fontSize: '0.72rem', fontWeight: 600 }}>
+                ⚠️ {keyError}
+              </div>
+            )}
+
             <div style={{ display: 'flex', alignItems: 'center', justifySelf: 'stretch', justifyContent: 'space-between', gap: '12px', marginTop: '4px' }}>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                 {apiKey ? '✓ API Key is configured' : '✗ API Key is missing'}
@@ -106,7 +168,7 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
 
           {saveSuccess && (
             <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--color-success)', fontSize: '0.75rem', fontWeight: 600 }}>
-              <CheckCircle size={14} /> Key saved successfully to groq_config.json!
+              <CheckCircle size={14} /> Key saved successfully!
             </div>
           )}
         </div>
@@ -118,36 +180,54 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
             <span>Local Configuration File Path</span>
           </h3>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <form onSubmit={handlePathSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div>
-              <span style={{ display: 'block', fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '4px' }}>
+              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
                 Absolute Local Path:
-              </span>
-              <div
-                className="font-mono"
-                style={{
-                  fontSize: '0.75rem',
-                  backgroundColor: '#f8fafc',
-                  border: '1px solid var(--border-light)',
-                  padding: '10px 12px',
-                  borderRadius: 'var(--radius-sm)',
-                  wordBreak: 'break-all',
-                  userSelect: 'all',
-                  color: 'var(--text-primary)',
-                  fontWeight: 600
-                }}
-              >
-                c:\Users\Meeket Tank\Desktop\Mutual Fund\groq_config.json
-              </div>
+              </label>
+              <input
+                type="text"
+                value={pathInput}
+                onChange={e => setPathInput(e.target.value)}
+                className="search-input-field font-mono"
+                placeholder="e.g. C:\path\to\groq_config.json"
+                style={{ background: '#ffffff', fontSize: '0.75rem' }}
+              />
             </div>
 
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-              <div style={{ display: 'flex', gap: '6px', alignItems: 'start' }}>
-                <HelpCircle size={14} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: '2px' }} />
-                <span>
-                  The API Key and generated analysis summaries are persisted in this local JSON file in the root of your workspace directory. This allows safe and clean storage on your filesystem.
-                </span>
+            {pathError && (
+              <div style={{ color: '#ef4444', fontSize: '0.72rem', fontWeight: 600 }}>
+                ⚠️ {pathError}
               </div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', justifySelf: 'stretch', justifyContent: 'space-between', gap: '12px', marginTop: '4px' }}>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                {savePath ? '✓ Path is set' : '✗ Save link not set'}
+              </span>
+              <button
+                type="submit"
+                disabled={isSavingPath}
+                className="btn btn-primary"
+                style={{ padding: '8px 16px', fontSize: '0.8rem', backgroundColor: 'var(--color-purple)' }}
+              >
+                {isSavingPath ? 'Saving...' : 'Save Path'}
+              </button>
+            </div>
+          </form>
+
+          {pathSaveSuccess && (
+            <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--color-success)', fontSize: '0.75rem', fontWeight: 600 }}>
+              <CheckCircle size={14} /> Path saved and configuration loaded!
+            </div>
+          )}
+
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: '1.4', marginTop: '12px' }}>
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'start' }}>
+              <HelpCircle size={14} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: '2px' }} />
+              <span>
+                Enter the absolute path to your configuration file (e.g. <code>c:\Users\Meeket Tank\Desktop\Mutual Fund\groq_config.json</code>). Pinned schemes, API Keys, and summaries will be written to this file.
+              </span>
             </div>
           </div>
         </div>

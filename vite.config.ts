@@ -11,15 +11,21 @@ export default defineConfig({
       name: 'config-middleware',
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
-          if (req.url === '/api/config') {
-            const configPath = path.resolve(__dirname, 'groq_config.json');
+          const urlObj = new URL(req.url || '', 'http://localhost');
+          if (urlObj.pathname === '/api/config') {
+            const customPath = urlObj.searchParams.get('path');
+            const configPath = customPath ? path.resolve(customPath) : path.resolve(__dirname, 'groq_config.json');
             
             if (req.method === 'GET') {
               res.setHeader('Content-Type', 'application/json');
               if (fs.existsSync(configPath)) {
-                res.end(fs.readFileSync(configPath, 'utf-8'));
+                try {
+                  res.end(fs.readFileSync(configPath, 'utf-8'));
+                } catch (e) {
+                  res.end(JSON.stringify({ apiKey: '', summary: '', pinnedSchemes: [] }));
+                }
               } else {
-                res.end(JSON.stringify({ apiKey: '', summary: '' }));
+                res.end(JSON.stringify({ apiKey: '', summary: '', pinnedSchemes: [] }));
               }
               return;
             }
@@ -32,7 +38,17 @@ export default defineConfig({
               req.on('end', () => {
                 try {
                   const data = JSON.parse(body);
-                  fs.writeFileSync(configPath, JSON.stringify(data, null, 2), 'utf-8');
+                  const targetPath = data.path ? path.resolve(data.path) : configPath;
+                  
+                  // Strip path from output json so it doesn't self-reference
+                  const { path: _, ...configToSave } = data;
+                  
+                  const dir = path.dirname(targetPath);
+                  if (!fs.existsSync(dir)) {
+                    fs.mkdirSync(dir, { recursive: true });
+                  }
+                  
+                  fs.writeFileSync(targetPath, JSON.stringify(configToSave, null, 2), 'utf-8');
                   res.setHeader('Content-Type', 'application/json');
                   res.end(JSON.stringify({ success: true }));
                 } catch (e) {

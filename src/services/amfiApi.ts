@@ -13,7 +13,6 @@ export const DEFAULT_SCHEME_CODES = [
   { schemeCode: 147820, name: 'Axis Money Market Fund - Direct Plan - Growth Option' },
   { schemeCode: 120716, name: 'Bandhan Money Manager Fund - Direct Plan - Growth' },
   { schemeCode: 120594, name: 'ICICI Prudential Money Market Fund - Direct Plan - Growth' },
-  { schemeCode: 120194, name: 'Kotak Money Market Scheme - Direct Plan - Growth' },
   { schemeCode: 119800, name: 'Nippon India Money Market Fund - Direct Plan Growth Option' },
   { schemeCode: 120739, name: 'UTI Money Market Fund - Direct Plan - Growth Option' },
   { schemeCode: 120349, name: 'HSBC Liquid Fund - Direct Plan - Growth' },
@@ -293,3 +292,59 @@ export function getNavOnDate(fund: PinnedFund, targetDate: string): { nav: numbe
 
   return null;
 }
+
+export function interpolateMissingData(
+  chartData: any[],
+  fundNames: string[]
+): any[] {
+  if (chartData.length === 0 || fundNames.length === 0) return chartData;
+
+  // We operate on a copy of chartData to avoid direct mutation issues
+  const data = chartData.map(row => ({ ...row }));
+
+  fundNames.forEach(name => {
+    for (let i = 0; i < data.length; i++) {
+      if (data[i][name] === undefined || data[i][name] === null) {
+        // Find prev index with value
+        let prevIdx = -1;
+        for (let j = i - 1; j >= 0; j--) {
+          if (data[j][name] !== undefined && data[j][name] !== null) {
+            prevIdx = j;
+            break;
+          }
+        }
+
+        // Find next index with value
+        let nextIdx = -1;
+        for (let j = i + 1; j < data.length; j++) {
+          if (data[j][name] !== undefined && data[j][name] !== null) {
+            nextIdx = j;
+            break;
+          }
+        }
+
+        if (prevIdx !== -1 && nextIdx !== -1) {
+          const prevTime = data[prevIdx].parsedDate.getTime();
+          const nextTime = data[nextIdx].parsedDate.getTime();
+          const currTime = data[i].parsedDate.getTime();
+          const prevVal = data[prevIdx][name];
+          const nextVal = data[nextIdx][name];
+
+          if (nextTime === prevTime) {
+            data[i][name] = prevVal;
+          } else {
+            const interpolated = prevVal + (nextVal - prevVal) * (currTime - prevTime) / (nextTime - prevTime);
+            data[i][name] = Math.round(interpolated * 10000) / 10000;
+          }
+        } else if (prevIdx !== -1) {
+          data[i][name] = data[prevIdx][name];
+        } else if (nextIdx !== -1) {
+          data[i][name] = data[nextIdx][name];
+        }
+      }
+    }
+  });
+
+  return data;
+}
+
