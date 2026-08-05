@@ -23,7 +23,6 @@ import { Page4ConclusionRanking } from './components/Page4ConclusionRanking';
 import { Page5Comparison } from './components/Page5Comparison';
 import { Page5DeveloperControls } from './components/Page5DeveloperControls';
 import { MFSearchResult } from './types/mf';
-import { fetchLocalConfig, saveLocalConfig } from './services/groqApi';
 
 const LOCAL_STORAGE_KEY = 'amfi_pinned_scheme_codes_v1';
 export const COLOR_PALETTE = ['#2563eb', '#059669', '#d97706', '#7c3aed', '#db2777', '#0891b2', '#e11d48', '#65a30d', '#9333ea'];
@@ -58,10 +57,11 @@ export const App: React.FC = () => {
     return `${year}-${month}-${day}`;
   });
 
-  const [apiKey, setApiKey] = useState<string>('');
-  const [summary, setSummary] = useState<string>('');
-  const [savePath, setSavePath] = useState<string>(() => {
-    return localStorage.getItem('save_data_path') || '';
+  const [apiKey, setApiKey] = useState<string>(() => {
+    return localStorage.getItem('groq_api_key') || '';
+  });
+  const [summary, setSummary] = useState<string>(() => {
+    return localStorage.getItem('groq_latest_summary') || '';
   });
 
   // Comparison Page State elevated to survive tab switches but cleared on refresh
@@ -78,90 +78,15 @@ export const App: React.FC = () => {
     return new Date().toISOString().split('T')[0];
   });
 
-  useEffect(() => {
-    setIsConfigLoaded(false);
-    fetchLocalConfig(savePath).then(cfg => {
-      if (cfg.exists) {
-        setApiKey(cfg.apiKey || '');
-        setSummary(cfg.summary || '');
-        if (cfg.pinnedSchemes) {
-          setPinnedSchemeCodes(cfg.pinnedSchemes);
-        }
-      } else if (savePath) {
-        saveLocalConfig(apiKey, summary, pinnedSchemeCodes, savePath);
-      }
-      setIsConfigLoaded(true);
-      if (!savePath) {
-        setTimeout(() => {
-          showToast('Save link not set, set from developer controls.');
-        }, 1500);
-      }
-    });
-  }, [savePath]);
-
   const handleSaveApiKey = async (newKey: string) => {
     setApiKey(newKey);
-    const success = await saveLocalConfig(newKey, summary, pinnedSchemeCodes, savePath);
-    if (!success && !savePath) {
-      showToast('Save link not set, set from developer controls.');
-    }
+    localStorage.setItem('groq_api_key', newKey);
+    showToast('API Key updated successfully!');
   };
 
   const handleUpdateSummary = async (newSummary: string) => {
     setSummary(newSummary);
-    const success = await saveLocalConfig(apiKey, newSummary, pinnedSchemeCodes, savePath);
-    if (!success && !savePath) {
-      showToast('Save link not set, set from developer controls.');
-    }
-  };
-
-  const handleSavePath = async (newPath: string) => {
-    localStorage.setItem('save_data_path', newPath);
-    setSavePath(newPath);
-    try {
-      setIsConfigLoaded(false);
-      const cfg = await fetchLocalConfig(newPath);
-      if (cfg.exists) {
-        setApiKey(cfg.apiKey || '');
-        setSummary(cfg.summary || '');
-        if (cfg.pinnedSchemes) {
-          setPinnedSchemeCodes(cfg.pinnedSchemes);
-        }
-      } else {
-        await saveLocalConfig(apiKey, summary, pinnedSchemeCodes, newPath);
-      }
-      setIsConfigLoaded(true);
-      showToast('Save path updated and configuration synchronized.');
-    } catch (err) {
-      showToast('Save path updated. Error syncing configuration.');
-    }
-  };
-
-  const handleImportConfig = (imported: { apiKey: string; summary: string; pinnedSchemes: number[] }) => {
-    if (imported.apiKey !== undefined) setApiKey(imported.apiKey);
-    if (imported.summary !== undefined) setSummary(imported.summary);
-    if (Array.isArray(imported.pinnedSchemes)) {
-      setPinnedSchemeCodes(imported.pinnedSchemes);
-    }
-    showToast('Configuration imported successfully!');
-  };
-
-  const handleExportConfig = () => {
-    const configData = {
-      apiKey,
-      summary,
-      pinnedSchemes: pinnedSchemeCodes
-    };
-    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
-      JSON.stringify(configData, null, 2)
-    )}`;
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute('href', jsonString);
-    downloadAnchor.setAttribute('download', 'groq_config.json');
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-    showToast('Configuration downloaded successfully!');
+    localStorage.setItem('groq_latest_summary', newSummary);
   };
 
   // Search autocomplete in top bar
@@ -177,11 +102,7 @@ export const App: React.FC = () => {
     } catch (e) {
       console.error('Failed to write pinned codes to localStorage', e);
     }
-
-    if (savePath && isConfigLoaded) {
-      saveLocalConfig(apiKey, summary, pinnedSchemeCodes, savePath);
-    }
-  }, [pinnedSchemeCodes, savePath, apiKey, summary, isConfigLoaded]);
+  }, [pinnedSchemeCodes]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -217,18 +138,10 @@ export const App: React.FC = () => {
   const handleTogglePin = (schemeCode: number) => {
     if (pinnedSchemeCodes.includes(schemeCode)) {
       setPinnedSchemeCodes(prev => prev.filter(c => c !== schemeCode));
-      if (!savePath) {
-        showToast('Removed from pinned list. Save link not set, set from developer controls.');
-      } else {
-        showToast('Removed from pinned list.');
-      }
+      showToast('Removed from pinned list.');
     } else {
       setPinnedSchemeCodes(prev => [...prev, schemeCode]);
-      if (!savePath) {
-        showToast('Added to pinned list. Save link not set, set from developer controls.');
-      } else {
-        showToast('Added to pinned list.');
-      }
+      showToast('Added to pinned list.');
     }
   };
 
@@ -519,10 +432,6 @@ export const App: React.FC = () => {
             <Page5DeveloperControls
               apiKey={apiKey}
               onSaveApiKey={handleSaveApiKey}
-              savePath={savePath}
-              onSavePath={handleSavePath}
-              onImportConfig={handleImportConfig}
-              onExportConfig={handleExportConfig}
             />
           )}
         </main>

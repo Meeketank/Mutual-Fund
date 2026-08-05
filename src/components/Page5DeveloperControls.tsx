@@ -1,22 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Key, FileText, CheckCircle, HelpCircle, Eye, EyeOff, User, Mail, AlertTriangle, Download, Upload } from 'lucide-react';
+import { Sliders, Key, CheckCircle, Eye, EyeOff, User, Mail } from 'lucide-react';
 
 interface Page5Props {
   apiKey: string;
   onSaveApiKey: (newKey: string) => Promise<void>;
-  savePath: string;
-  onSavePath: (newPath: string) => Promise<void>;
-  onImportConfig: (config: { apiKey: string; summary: string; pinnedSchemes: number[] }) => void;
-  onExportConfig: () => void;
 }
 
 export const Page5DeveloperControls: React.FC<Page5Props> = ({
   apiKey,
-  onSaveApiKey,
-  savePath,
-  onSavePath,
-  onImportConfig,
-  onExportConfig
+  onSaveApiKey
 }) => {
   const [keyInput, setKeyInput] = useState(apiKey);
   const [showKey, setShowKey] = useState(false);
@@ -24,26 +16,13 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
 
-  const [pathInput, setPathInput] = useState(savePath);
-  const [isSavingPath, setIsSavingPath] = useState(false);
-  const [pathSaveSuccess, setPathSaveSuccess] = useState(false);
-  const [pathError, setPathError] = useState<string | null>(null);
-
   // Sync state if prop changes
   useEffect(() => {
     setKeyInput(apiKey);
   }, [apiKey]);
 
-  useEffect(() => {
-    setPathInput(savePath);
-  }, [savePath]);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!savePath) {
-      setKeyError('Save link not set, set from developer controls.');
-      return;
-    }
     setKeyError(null);
     setIsSaving(true);
     try {
@@ -57,25 +36,6 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
     }
   };
 
-  const handlePathSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!pathInput.trim()) {
-      setPathError('Path cannot be empty');
-      return;
-    }
-    setPathError(null);
-    setIsSavingPath(true);
-    try {
-      await onSavePath(pathInput.trim());
-      setPathSaveSuccess(true);
-      setTimeout(() => setPathSaveSuccess(false), 3000);
-    } catch (err: any) {
-      setPathError(err.message || 'Failed to save path');
-    } finally {
-      setIsSavingPath(false);
-    }
-  };
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {/* Welcome Banner */}
@@ -86,29 +46,11 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
         </div>
         <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '4px', color: 'var(--text-primary)' }}>Developer Controls</h2>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-          Configure API credentials, inspect system local configuration files, and check system status.
+          Configure API credentials, inspect system status, and manage developer preferences.
         </p>
       </div>
 
-      {!savePath && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          padding: '12px 16px',
-          backgroundColor: '#fffbeb',
-          border: '1px solid #fef3c7',
-          borderRadius: 'var(--radius-md)',
-          color: '#b45309',
-          fontSize: '0.82rem',
-          fontWeight: 600
-        }}>
-          <AlertTriangle size={18} style={{ color: '#d97706', flexShrink: 0 }} />
-          <span>Save link not set! Please configure the local save path below to persist API credentials and pinned schemes.</span>
-        </div>
-      )}
-
-      <div className="panel-grid-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>
+      <div className="panel-grid-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '20px' }}>
         {/* API Credentials Card */}
         <div className="card-panel">
           <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
@@ -121,14 +63,14 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
               <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
                 Groq API Key (gsk_...)
               </label>
-              <div className="relative">
+              <div className="relative" style={{ position: 'relative' }}>
                 <input
                   type={showKey ? 'text' : 'password'}
                   value={keyInput}
                   onChange={e => setKeyInput(e.target.value)}
                   className="search-input-field"
                   placeholder="Enter your Groq API Key"
-                  style={{ paddingRight: '40px', paddingLeft: '14px', background: '#ffffff' }}
+                  style={{ width: '100%', paddingRight: '40px', paddingLeft: '14px', background: '#ffffff', height: '38px', borderRadius: '6px', border: '1px solid var(--border-light)' }}
                 />
                 <button
                   type="button"
@@ -175,115 +117,6 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
               <CheckCircle size={14} /> Key saved successfully!
             </div>
           )}
-        </div>
-
-        {/* Local Storage System Path Card */}
-        <div className="card-panel">
-          <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-            <FileText size={18} style={{ color: 'var(--color-purple)' }} />
-            <span>Local Configuration File Path</span>
-          </h3>
-
-          <form onSubmit={handlePathSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
-                Absolute Local Folder or Config File Path:
-              </label>
-              <input
-                type="text"
-                value={pathInput}
-                onChange={e => setPathInput(e.target.value)}
-                className="search-input-field font-mono"
-                placeholder="e.g. C:\path\to\folder"
-                style={{ background: '#ffffff', fontSize: '0.75rem' }}
-              />
-            </div>
-
-            {pathError && (
-              <div style={{ color: '#ef4444', fontSize: '0.72rem', fontWeight: 600 }}>
-                ⚠️ {pathError}
-              </div>
-            )}
-
-            <div style={{ display: 'flex', alignItems: 'center', justifySelf: 'stretch', justifyContent: 'space-between', gap: '12px', marginTop: '4px' }}>
-              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                {savePath ? '✓ Path is set' : '✗ Save link not set'}
-              </span>
-              <button
-                type="submit"
-                disabled={isSavingPath}
-                className="btn btn-primary"
-                style={{ padding: '8px 16px', fontSize: '0.8rem', backgroundColor: 'var(--color-purple)' }}
-              >
-                {isSavingPath ? 'Saving...' : 'Save Path'}
-              </button>
-            </div>
-          </form>
-
-          {pathSaveSuccess && (
-            <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--color-success)', fontSize: '0.75rem', fontWeight: 600 }}>
-              <CheckCircle size={14} /> Path saved and configuration loaded!
-            </div>
-          )}
-
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: '1.4', marginTop: '12px' }}>
-            <div style={{ display: 'flex', gap: '6px', alignItems: 'start' }}>
-              <HelpCircle size={14} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: '2px' }} />
-              <span>
-                Enter the absolute path to your folder (e.g. <code>c:\Users\Meeket Tank\Desktop\Mutual Fund</code>). A file named <code>groq_config.json</code> will be created or loaded inside it to persist pinned schemes, API Keys, and summaries.
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Web Config Backup & Restore (GitHub Pages) */}
-        <div className="card-panel">
-          <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-            <Download size={18} style={{ color: 'var(--color-primary)' }} />
-            <span>Web Backup & Restore (GitHub Pages)</span>
-          </h3>
-          <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '16px', lineHeight: '1.4' }}>
-            Since public websites hosted on GitHub Pages cannot write directly to your local computer's drive, you can download your configuration file to save it locally, or upload it to restore your settings.
-          </p>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <button
-              type="button"
-              onClick={onExportConfig}
-              className="btn btn-primary"
-              style={{ width: '100%', padding: '10px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-            >
-              <Download size={14} />
-              <span>Download groq_config.json</span>
-            </button>
-
-            <div style={{ borderTop: '1px solid var(--border-light)', margin: '12px 0' }} />
-
-            <div>
-              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
-                Upload groq_config.json to restore:
-              </label>
-              <input
-                type="file"
-                accept=".json"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  const reader = new FileReader();
-                  reader.onload = (event) => {
-                    try {
-                      const parsed = JSON.parse(event.target?.result as string);
-                      onImportConfig(parsed);
-                    } catch (err) {
-                      alert('Invalid config JSON file');
-                    }
-                  };
-                  reader.readAsText(file);
-                }}
-                style={{ fontSize: '0.75rem', width: '100%' }}
-              />
-            </div>
-          </div>
         </div>
 
         {/* Developer Info Card */}
