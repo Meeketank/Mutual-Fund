@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.*
+.DS_Store
+groq_config.json
+groq.txt
+thumbs.db
+db.json

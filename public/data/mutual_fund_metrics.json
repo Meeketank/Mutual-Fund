@@ -1,0 +1,76 @@
+{
+  "120503": {
+    "name": "Aditya Birla Sun Life Money Manager Fund",
+    "aumCr": 28778.0,
+    "expenseRatio": 0.37,
+    "historical": {
+      "30-07-2026": { "aumCr": 28778.0, "expenseRatio": 0.37 },
+      "03-08-2026": { "aumCr": 28778.0, "expenseRatio": 0.37 },
+      "04-08-2026": { "aumCr": 28778.0, "expenseRatio": 0.37 }
+    }
+  },
+  "147820": {
+    "name": "Axis Money Market Fund",
+    "aumCr": 11340.0,
+    "expenseRatio": 0.28,
+    "historical": {
+      "30-07-2026": { "aumCr": 11340.0, "expenseRatio": 0.28 }
+    }
+  },
+  "120716": {
+    "name": "Bandhan Money Market Fund",
+    "aumCr": 4120.0,
+    "expenseRatio": 0.30,
+    "historical": {
+      "30-07-2026": { "aumCr": 4120.0, "expenseRatio": 0.30 }
+    }
+  },
+  "120594": {
+    "name": "ICICI Prudential Money Market Fund",
+    "aumCr": 18450.0,
+    "expenseRatio": 0.35,
+    "historical": {
+      "30-07-2026": { "aumCr": 18450.0, "expenseRatio": 0.35 }
+    }
+  },
+  "120194": {
+    "name": "Kotak Money Market Scheme",
+    "aumCr": 16210.0,
+    "expenseRatio": 0.32,
+    "historical": {
+      "30-07-2026": { "aumCr": 16210.0, "expenseRatio": 0.32 }
+    }
+  },
+  "119800": {
+    "name": "Nippon India Money Market Fund",
+    "aumCr": 12890.0,
+    "expenseRatio": 0.31,
+    "historical": {
+      "30-07-2026": { "aumCr": 12890.0, "expenseRatio": 0.31 }
+    }
+  },
+  "120739": {
+    "name": "UTI Money Market Fund",
+    "aumCr": 9850.0,
+    "expenseRatio": 0.29,
+    "historical": {
+      "30-07-2026": { "aumCr": 9850.0, "expenseRatio": 0.29 }
+    }
+  },
+  "120349": {
+    "name": "HSBC Liquid Fund",
+    "aumCr": 15400.0,
+    "expenseRatio": 0.33,
+    "historical": {
+      "30-07-2026": { "aumCr": 15400.0, "expenseRatio": 0.33 }
+    }
+  },
+  "119253": {
+    "name": "Baroda BNP Paribas Liquid Fund",
+    "aumCr": 7980.0,
+    "expenseRatio": 0.34,
+    "historical": {
+      "30-07-2026": { "aumCr": 7980.0, "expenseRatio": 0.34 }
+    }
+  }
+}
