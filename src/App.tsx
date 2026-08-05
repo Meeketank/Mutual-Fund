@@ -137,6 +137,33 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleImportConfig = (imported: { apiKey: string; summary: string; pinnedSchemes: number[] }) => {
+    if (imported.apiKey !== undefined) setApiKey(imported.apiKey);
+    if (imported.summary !== undefined) setSummary(imported.summary);
+    if (Array.isArray(imported.pinnedSchemes)) {
+      setPinnedSchemeCodes(imported.pinnedSchemes);
+    }
+    showToast('Configuration imported successfully!');
+  };
+
+  const handleExportConfig = () => {
+    const configData = {
+      apiKey,
+      summary,
+      pinnedSchemes: pinnedSchemeCodes
+    };
+    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
+      JSON.stringify(configData, null, 2)
+    )}`;
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute('href', jsonString);
+    downloadAnchor.setAttribute('download', 'groq_config.json');
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    showToast('Configuration downloaded successfully!');
+  };
+
   // Search autocomplete in top bar
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<MFSearchResult[]>([]);
@@ -494,6 +521,8 @@ export const App: React.FC = () => {
               onSaveApiKey={handleSaveApiKey}
               savePath={savePath}
               onSavePath={handleSavePath}
+              onImportConfig={handleImportConfig}
+              onExportConfig={handleExportConfig}
             />
           )}
         </main>

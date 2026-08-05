@@ -1,18 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { Sliders, Key, FileText, CheckCircle, HelpCircle, Eye, EyeOff, User, Mail, AlertTriangle } from 'lucide-react';
+import { Sliders, Key, FileText, CheckCircle, HelpCircle, Eye, EyeOff, User, Mail, AlertTriangle, Download, Upload } from 'lucide-react';
 
 interface Page5Props {
   apiKey: string;
   onSaveApiKey: (newKey: string) => Promise<void>;
   savePath: string;
   onSavePath: (newPath: string) => Promise<void>;
+  onImportConfig: (config: { apiKey: string; summary: string; pinnedSchemes: number[] }) => void;
+  onExportConfig: () => void;
 }
 
 export const Page5DeveloperControls: React.FC<Page5Props> = ({
   apiKey,
   onSaveApiKey,
   savePath,
-  onSavePath
+  onSavePath,
+  onImportConfig,
+  onExportConfig
 }) => {
   const [keyInput, setKeyInput] = useState(apiKey);
   const [showKey, setShowKey] = useState(false);
@@ -228,6 +232,56 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
               <span>
                 Enter the absolute path to your folder (e.g. <code>c:\Users\Meeket Tank\Desktop\Mutual Fund</code>). A file named <code>groq_config.json</code> will be created or loaded inside it to persist pinned schemes, API Keys, and summaries.
               </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Web Config Backup & Restore (GitHub Pages) */}
+        <div className="card-panel">
+          <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+            <Download size={18} style={{ color: 'var(--color-primary)' }} />
+            <span>Web Backup & Restore (GitHub Pages)</span>
+          </h3>
+          <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '16px', lineHeight: '1.4' }}>
+            Since public websites hosted on GitHub Pages cannot write directly to your local computer's drive, you can download your configuration file to save it locally, or upload it to restore your settings.
+          </p>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <button
+              type="button"
+              onClick={onExportConfig}
+              className="btn btn-primary"
+              style={{ width: '100%', padding: '10px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+            >
+              <Download size={14} />
+              <span>Download groq_config.json</span>
+            </button>
+
+            <div style={{ borderTop: '1px solid var(--border-light)', margin: '12px 0' }} />
+
+            <div>
+              <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                Upload groq_config.json to restore:
+              </label>
+              <input
+                type="file"
+                accept=".json"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = (event) => {
+                    try {
+                      const parsed = JSON.parse(event.target?.result as string);
+                      onImportConfig(parsed);
+                    } catch (err) {
+                      alert('Invalid config JSON file');
+                    }
+                  };
+                  reader.readAsText(file);
+                }}
+                style={{ fontSize: '0.75rem', width: '100%' }}
+              />
             </div>
           </div>
         </div>
