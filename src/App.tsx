@@ -44,6 +44,7 @@ export const App: React.FC = () => {
   });
 
   const [pinnedFundsData, setPinnedFundsData] = useState<PinnedFund[]>([]);
+  const [isConfigLoaded, setIsConfigLoaded] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -78,6 +79,7 @@ export const App: React.FC = () => {
   });
 
   useEffect(() => {
+    setIsConfigLoaded(false);
     fetchLocalConfig(savePath).then(cfg => {
       if (cfg.exists) {
         setApiKey(cfg.apiKey || '');
@@ -88,6 +90,7 @@ export const App: React.FC = () => {
       } else if (savePath) {
         saveLocalConfig(apiKey, summary, pinnedSchemeCodes, savePath);
       }
+      setIsConfigLoaded(true);
       if (!savePath) {
         setTimeout(() => {
           showToast('Save link not set, set from developer controls.');
@@ -116,6 +119,7 @@ export const App: React.FC = () => {
     localStorage.setItem('save_data_path', newPath);
     setSavePath(newPath);
     try {
+      setIsConfigLoaded(false);
       const cfg = await fetchLocalConfig(newPath);
       if (cfg.exists) {
         setApiKey(cfg.apiKey || '');
@@ -126,6 +130,7 @@ export const App: React.FC = () => {
       } else {
         await saveLocalConfig(apiKey, summary, pinnedSchemeCodes, newPath);
       }
+      setIsConfigLoaded(true);
       showToast('Save path updated and configuration synchronized.');
     } catch (err) {
       showToast('Save path updated. Error syncing configuration.');
@@ -146,10 +151,10 @@ export const App: React.FC = () => {
       console.error('Failed to write pinned codes to localStorage', e);
     }
 
-    if (savePath) {
+    if (savePath && isConfigLoaded) {
       saveLocalConfig(apiKey, summary, pinnedSchemeCodes, savePath);
     }
-  }, [pinnedSchemeCodes, savePath, apiKey, summary]);
+  }, [pinnedSchemeCodes, savePath, apiKey, summary, isConfigLoaded]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
