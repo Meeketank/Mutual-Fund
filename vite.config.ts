@@ -34,12 +34,15 @@ export default defineConfig({
               res.setHeader('Content-Type', 'application/json');
               if (fs.existsSync(configPath)) {
                 try {
-                  res.end(fs.readFileSync(configPath, 'utf-8'));
+                  const content = fs.readFileSync(configPath, 'utf-8');
+                  const parsed = JSON.parse(content);
+                  parsed.exists = true;
+                  res.end(JSON.stringify(parsed));
                 } catch (e) {
-                  res.end(JSON.stringify({ apiKey: '', summary: '', pinnedSchemes: [] }));
+                  res.end(JSON.stringify({ apiKey: '', summary: '', pinnedSchemes: [], exists: false }));
                 }
               } else {
-                res.end(JSON.stringify({ apiKey: '', summary: '', pinnedSchemes: [] }));
+                res.end(JSON.stringify({ apiKey: '', summary: '', pinnedSchemes: [], exists: false }));
               }
               return;
             }

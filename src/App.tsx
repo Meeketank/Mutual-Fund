@@ -79,10 +79,14 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     fetchLocalConfig(savePath).then(cfg => {
-      setApiKey(cfg.apiKey || '');
-      setSummary(cfg.summary || '');
-      if (cfg.pinnedSchemes) {
-        setPinnedSchemeCodes(cfg.pinnedSchemes);
+      if (cfg.exists) {
+        setApiKey(cfg.apiKey || '');
+        setSummary(cfg.summary || '');
+        if (cfg.pinnedSchemes) {
+          setPinnedSchemeCodes(cfg.pinnedSchemes);
+        }
+      } else if (savePath) {
+        saveLocalConfig(apiKey, summary, pinnedSchemeCodes, savePath);
       }
       if (!savePath) {
         setTimeout(() => {
@@ -113,10 +117,12 @@ export const App: React.FC = () => {
     setSavePath(newPath);
     try {
       const cfg = await fetchLocalConfig(newPath);
-      setApiKey(cfg.apiKey || '');
-      setSummary(cfg.summary || '');
-      if (cfg.pinnedSchemes) {
-        setPinnedSchemeCodes(cfg.pinnedSchemes);
+      if (cfg.exists) {
+        setApiKey(cfg.apiKey || '');
+        setSummary(cfg.summary || '');
+        if (cfg.pinnedSchemes) {
+          setPinnedSchemeCodes(cfg.pinnedSchemes);
+        }
       } else {
         await saveLocalConfig(apiKey, summary, pinnedSchemeCodes, newPath);
       }

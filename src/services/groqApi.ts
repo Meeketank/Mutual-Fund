@@ -58,7 +58,7 @@ Overall Insight: ...`;
   return result.choices?.[0]?.message?.content || 'No summary generated.';
 }
 
-export async function fetchLocalConfig(savePath: string): Promise<{ apiKey: string; summary: string; pinnedSchemes: number[] }> {
+export async function fetchLocalConfig(savePath: string): Promise<{ apiKey: string; summary: string; pinnedSchemes: number[]; exists?: boolean }> {
   if (savePath) {
     try {
       const res = await fetch(`/api/config?path=${encodeURIComponent(savePath)}`);
@@ -67,7 +67,8 @@ export async function fetchLocalConfig(savePath: string): Promise<{ apiKey: stri
         return {
           apiKey: data.apiKey || '',
           summary: data.summary || '',
-          pinnedSchemes: Array.isArray(data.pinnedSchemes) ? data.pinnedSchemes : []
+          pinnedSchemes: Array.isArray(data.pinnedSchemes) ? data.pinnedSchemes : [],
+          exists: data.exists !== false
         };
       }
     } catch (e) {
@@ -81,13 +82,15 @@ export async function fetchLocalConfig(savePath: string): Promise<{ apiKey: stri
     return {
       apiKey: localStorage.getItem('groq_api_key') || '',
       summary: localStorage.getItem('groq_latest_summary') || '',
-      pinnedSchemes: storedPinned ? JSON.parse(storedPinned) : []
+      pinnedSchemes: storedPinned ? JSON.parse(storedPinned) : [],
+      exists: true
     };
   } catch (e) {
     return {
       apiKey: localStorage.getItem('groq_api_key') || '',
       summary: localStorage.getItem('groq_latest_summary') || '',
-      pinnedSchemes: []
+      pinnedSchemes: [],
+      exists: true
     };
   }
 }
