@@ -8,16 +8,7 @@ import {
 
 const API_BASE = 'https://api.mfapi.in/mf';
 
-export const DEFAULT_SCHEME_CODES = [
-  { schemeCode: 120503, name: 'Aditya Birla Sun Life Money Manager Fund - Growth - Direct Plan' },
-  { schemeCode: 147820, name: 'Axis Money Market Fund - Direct Plan - Growth Option' },
-  { schemeCode: 120716, name: 'Bandhan Money Manager Fund - Direct Plan - Growth' },
-  { schemeCode: 120594, name: 'ICICI Prudential Money Market Fund - Direct Plan - Growth' },
-  { schemeCode: 119800, name: 'Nippon India Money Market Fund - Direct Plan Growth Option' },
-  { schemeCode: 120739, name: 'UTI Money Market Fund - Direct Plan - Growth Option' },
-  { schemeCode: 120349, name: 'HSBC Liquid Fund - Direct Plan - Growth' },
-  { schemeCode: 119253, name: 'Baroda BNP Paribas Liquid Fund - Direct Plan - Growth' }
-];
+export const DEFAULT_SCHEME_CODES: { schemeCode: number; name: string }[] = [];
 
 export function parseAMFIDate(dateStr: string): Date {
   const parts = dateStr.split('-');

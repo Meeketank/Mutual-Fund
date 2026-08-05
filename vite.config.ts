@@ -14,7 +14,21 @@ export default defineConfig({
           const urlObj = new URL(req.url || '', 'http://localhost');
           if (urlObj.pathname === '/api/config') {
             const customPath = urlObj.searchParams.get('path');
-            const configPath = customPath ? path.resolve(customPath) : path.resolve(__dirname, 'groq_config.json');
+            let configPath = customPath ? path.resolve(customPath) : path.resolve(__dirname, 'groq_config.json');
+            
+            if (customPath) {
+              try {
+                if (fs.existsSync(configPath) && fs.statSync(configPath).isDirectory()) {
+                  configPath = path.join(configPath, 'groq_config.json');
+                } else if (!configPath.toLowerCase().endsWith('.json')) {
+                  configPath = path.join(configPath, 'groq_config.json');
+                }
+              } catch (e) {
+                if (!configPath.toLowerCase().endsWith('.json')) {
+                  configPath = path.join(configPath, 'groq_config.json');
+                }
+              }
+            }
             
             if (req.method === 'GET') {
               res.setHeader('Content-Type', 'application/json');
@@ -38,7 +52,21 @@ export default defineConfig({
               req.on('end', () => {
                 try {
                   const data = JSON.parse(body);
-                  const targetPath = data.path ? path.resolve(data.path) : configPath;
+                  let targetPath = data.path ? path.resolve(data.path) : configPath;
+                  
+                  if (data.path) {
+                    try {
+                      if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
+                        targetPath = path.join(targetPath, 'groq_config.json');
+                      } else if (!targetPath.toLowerCase().endsWith('.json')) {
+                        targetPath = path.join(targetPath, 'groq_config.json');
+                      }
+                    } catch (e) {
+                      if (!targetPath.toLowerCase().endsWith('.json')) {
+                        targetPath = path.join(targetPath, 'groq_config.json');
+                      }
+                    }
+                  }
                   
                   // Strip path from output json so it doesn't self-reference
                   const { path: _, ...configToSave } = data;

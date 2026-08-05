@@ -183,14 +183,14 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
           <form onSubmit={handlePathSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '6px' }}>
-                Absolute Local Path:
+                Absolute Local Folder or Config File Path:
               </label>
               <input
                 type="text"
                 value={pathInput}
                 onChange={e => setPathInput(e.target.value)}
                 className="search-input-field font-mono"
-                placeholder="e.g. C:\path\to\groq_config.json"
+                placeholder="e.g. C:\path\to\folder"
                 style={{ background: '#ffffff', fontSize: '0.75rem' }}
               />
             </div>
@@ -226,7 +226,7 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
             <div style={{ display: 'flex', gap: '6px', alignItems: 'start' }}>
               <HelpCircle size={14} style={{ color: 'var(--text-muted)', flexShrink: 0, marginTop: '2px' }} />
               <span>
-                Enter the absolute path to your configuration file (e.g. <code>c:\Users\Meeket Tank\Desktop\Mutual Fund\groq_config.json</code>). Pinned schemes, API Keys, and summaries will be written to this file.
+                Enter the absolute path to your folder (e.g. <code>c:\Users\Meeket Tank\Desktop\Mutual Fund</code>). A file named <code>groq_config.json</code> will be created or loaded inside it to persist pinned schemes, API Keys, and summaries.
               </span>
             </div>
           </div>

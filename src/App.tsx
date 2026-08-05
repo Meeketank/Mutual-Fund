@@ -35,12 +35,12 @@ export const App: React.FC = () => {
       const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch (e) {
       console.warn('Failed to parse localStorage pinned codes', e);
     }
-    return DEFAULT_SCHEME_CODES.map(d => d.schemeCode);
+    return [];
   });
 
   const [pinnedFundsData, setPinnedFundsData] = useState<PinnedFund[]>([]);
@@ -81,7 +81,7 @@ export const App: React.FC = () => {
     fetchLocalConfig(savePath).then(cfg => {
       setApiKey(cfg.apiKey || '');
       setSummary(cfg.summary || '');
-      if (cfg.pinnedSchemes && cfg.pinnedSchemes.length > 0) {
+      if (cfg.pinnedSchemes) {
         setPinnedSchemeCodes(cfg.pinnedSchemes);
       }
       if (!savePath) {
@@ -115,7 +115,7 @@ export const App: React.FC = () => {
       const cfg = await fetchLocalConfig(newPath);
       setApiKey(cfg.apiKey || '');
       setSummary(cfg.summary || '');
-      if (cfg.pinnedSchemes && cfg.pinnedSchemes.length > 0) {
+      if (cfg.pinnedSchemes) {
         setPinnedSchemeCodes(cfg.pinnedSchemes);
       } else {
         await saveLocalConfig(apiKey, summary, pinnedSchemeCodes, newPath);

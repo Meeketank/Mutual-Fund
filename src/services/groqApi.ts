@@ -1,19 +1,5 @@
 import { PinnedFund } from '../types/mf';
 
-// Helper metrics for system prompt
-const REFERENCE_METRICS = `
-Default Schemes Reference Metrics:
-- Aditya Birla Sun Life Money Manager Fund: AUM ₹28,778 Cr, Expense Ratio 0.37% (rank 8 on cost)
-- Axis Money Market Fund: AUM ₹7,600 Cr, Expense Ratio 0.15% (rank 1 on cost)
-- Bandhan Money Market Fund: AUM ₹3,600 Cr, Expense Ratio 0.16% (rank 3 on cost)
-- ICICI Prudential Money Market Fund: AUM ₹31,085 Cr, Expense Ratio 0.22% (rank 4 on cost)
-- Kotak Money Market Fund: AUM ₹32,331 Cr, Expense Ratio 0.21% (rank 2 on cost)
-- Nippon India Money Market Fund: AUM ₹11,500 Cr, Expense Ratio 0.19% (rank 5 on cost)
-- UTI Money Market Fund: AUM ₹9,200 Cr, Expense Ratio 0.17% (rank 2 on cost)
-- HSBC Liquid Fund: AUM ₹19,663 Cr, Expense Ratio 0.19% (rank 2 on cost)
-- Baroda BNP Paribas Liquid Fund: AUM ₹11,380 Cr, Expense Ratio 0.18% (rank 1 on cost)
-`;
-
 export async function generateGroqSummary(apiKey: string, rankingsData: any[]): Promise<string> {
   if (!apiKey) {
     throw new Error('Groq API Key is not configured. Please add it in the Developer Controls tab.');
@@ -25,29 +11,26 @@ export async function generateGroqSummary(apiKey: string, rankingsData: any[]): 
   ).join('\n');
 
   const systemPrompt = `You are a professional financial analyst specialized in Indian Mutual Funds.
-Analyze the following mutual funds and compute comparative insights.
+Analyze the provided mutual funds and compute comparative insights based on their performance.
 Important instructions:
 - Provide observations and conclusions in detail.
-- You must integrate both the return metrics (7D, 15D, 30D) from the input payload and the AMC Reference Metrics (AUM and Expense Ratio) listed below.
+- You must analyze the return metrics (7D, 15D, 30D) from the input payload.
 - Keep the tone highly professional, objective, and clear.
-- Frame your response in markdown format with two clear sections: "Observations" (numbered list) and "Executive Summary" (bullet list of key callouts and final takeaways).
-
-${REFERENCE_METRICS}`;
+- Frame your response in markdown format with two clear sections: "Observations" (numbered list) and "Executive Summary" (bullet list of key callouts and final takeaways).`;
 
   const userPrompt = `Here is the current mutual fund performance rankings data (compact format):
 ${compactPayload}
 
 Generate the observations list and executive summary matching the following structure:
 Observations
-1. Aditya Birla Sun Life Money Manager Fund delivered the highest 30-day rolling return (0.90%) among the combined shortlist, but it also carries the second-highest expense ratio (0.37%, rank 8) — the outperformance is coming at a real cost.
-2. [Generate similar descriptive bullet points for other schemes referencing their NAV, returns, AUM, and Expense ratios...]
+1. [Analyze first scheme and its performance metrics...]
+2. [Analyze next scheme...]
 
 Executive Summary
 Best Return: ...
-Best Overall Balance: ...
-Largest Fund by AUM: ...
-Lowest Cost: ...
-Weakest Overall: ...
+Best Short-term Return (7D): ...
+Best Mid-term Return (15D): ...
+Best Long-term Return (30D): ...
 Overall Insight: ...`;
 
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
