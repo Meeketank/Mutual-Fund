@@ -41,6 +41,9 @@ export interface PinnedFund {
   return7d: number;
   return15d: number;
   return30d: number;
+  return7dAnn: number;
+  return15dAnn: number;
+  return30dAnn: number;
 }
 
 export interface GranularNAVRow {
@@ -55,6 +58,9 @@ export interface GranularNAVRow {
   rollingReturn7d: number | null;
   rollingReturn15d: number | null;
   rollingReturn30d: number | null;
+  rollingReturn7dAnn: number | null;
+  rollingReturn15dAnn: number | null;
+  rollingReturn30dAnn: number | null;
 }
 
 export interface RankingRow {

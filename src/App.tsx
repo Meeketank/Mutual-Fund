@@ -30,16 +30,19 @@ export const COLOR_PALETTE = ['#2563eb', '#059669', '#d97706', '#7c3aed', '#db27
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<number>(1);
   const [pinnedSchemeCodes, setPinnedSchemeCodes] = useState<number[]>(() => {
+    const defaultCodes = DEFAULT_SCHEME_CODES.map(s => s.schemeCode);
     try {
       const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return Array.from(new Set([...parsed, ...defaultCodes]));
+        }
       }
     } catch (e) {
       console.warn('Failed to parse localStorage pinned codes', e);
     }
-    return [];
+    return defaultCodes;
   });
 
   const [pinnedFundsData, setPinnedFundsData] = useState<PinnedFund[]>([]);

@@ -34,6 +34,14 @@ export function formatDateDisplay(dateStrOrObj: string | Date): string {
 let allSchemesCache: MFSearchResult[] | null = null;
 const fundDetailsCache: Map<number, PinnedFund> = new Map();
 
+export function calculateAnnualizedReturn(returnPct: number | null, days: number): number | null {
+  if (returnPct === null || isNaN(returnPct) || days <= 0) return null;
+  const growthFactor = 1 + returnPct / 100;
+  if (growthFactor <= 0) return null;
+  const ann = (Math.pow(growthFactor, 365 / days) - 1) * 100;
+  return Math.round(ann * 100) / 100;
+}
+
 export async function fetchAllSchemes(): Promise<MFSearchResult[]> {
   if (allSchemesCache) return allSchemesCache;
   try {
@@ -121,7 +129,10 @@ export async function fetchFundDetail(schemeCode: number): Promise<PinnedFund> {
       historicalData: [],
       return7d: 0,
       return15d: 0,
-      return30d: 0
+      return30d: 0,
+      return7dAnn: 0,
+      return15dAnn: 0,
+      return30dAnn: 0
     };
     fundDetailsCache.set(schemeCode, fallback);
     return fallback;
@@ -160,6 +171,10 @@ export async function fetchFundDetail(schemeCode: number): Promise<PinnedFund> {
     return Math.round(returnPct * 100) / 100;
   };
 
+  const ret7d = calculateReturnForDays(7);
+  const ret15d = calculateReturnForDays(15);
+  const ret30d = calculateReturnForDays(30);
+
   const fund: PinnedFund = {
     schemeCode: meta.scheme_code,
     schemeName: meta.scheme_name,
@@ -169,9 +184,12 @@ export async function fetchFundDetail(schemeCode: number): Promise<PinnedFund> {
     latestNav: latestItem.nav,
     navAsOf: formatDateDisplay(latestItem.date),
     historicalData: historical,
-    return7d: calculateReturnForDays(7),
-    return15d: calculateReturnForDays(15),
-    return30d: calculateReturnForDays(30)
+    return7d: ret7d,
+    return15d: ret15d,
+    return30d: ret30d,
+    return7dAnn: calculateAnnualizedReturn(ret7d, 7) || 0,
+    return15dAnn: calculateAnnualizedReturn(ret15d, 15) || 0,
+    return30dAnn: calculateAnnualizedReturn(ret30d, 30) || 0
   };
 
   fundDetailsCache.set(schemeCode, fund);
@@ -210,6 +228,10 @@ export function generateAMCNAVRows(fund: PinnedFund, limit: number = 100): Granu
     const rollingReturn15d = nav15d && nav15d > 0 ? Math.round(((closingNav - nav15d) / nav15d) * 100 * 100) / 100 : null;
     const rollingReturn30d = nav30d && nav30d > 0 ? Math.round(((closingNav - nav30d) / nav30d) * 100 * 100) / 100 : null;
 
+    const rollingReturn7dAnn = calculateAnnualizedReturn(rollingReturn7d, 7);
+    const rollingReturn15dAnn = calculateAnnualizedReturn(rollingReturn15d, 15);
+    const rollingReturn30dAnn = calculateAnnualizedReturn(rollingReturn30d, 30);
+
     rows.push({
       id: `${fund.schemeCode}-${current.date}`,
       fundName: fund.schemeName,
@@ -221,7 +243,10 @@ export function generateAMCNAVRows(fund: PinnedFund, limit: number = 100): Granu
       deltaPercent,
       rollingReturn7d,
       rollingReturn15d,
-      rollingReturn30d
+      rollingReturn30d,
+      rollingReturn7dAnn,
+      rollingReturn15dAnn,
+      rollingReturn30dAnn
     });
   }
 
