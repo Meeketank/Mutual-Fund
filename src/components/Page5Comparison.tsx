@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Sparkles, X, Search, RefreshCw, Eye, EyeOff, Calendar, Percent, TrendingUp } from 'lucide-react';
+import { Sparkles, X, Search, RefreshCw, Eye, EyeOff, Calendar, Percent, TrendingUp, Plus } from 'lucide-react';
 import {
   ResponsiveContainer,
   LineChart,
@@ -66,7 +66,6 @@ const DEFAULT_PORTFOLIOS: { [code: number]: PortfolioData } = {
       { company: 'Tata Power Company Ltd.', weight: 4.9, instrument: 'Commercial Paper' }
     ]
   },
-
   119800: { // Nippon India Money Market
     assetAllocation: { cash: 3.5, cd: 34.0, cp: 46.5, gsec: 4.2, tbills: 7.8, corpDebt: 4.0 },
     topHoldings: [
@@ -114,7 +113,6 @@ function getPortfolioAllocation(schemeCode: number, schemeName: string): Portfol
     return DEFAULT_PORTFOLIOS[schemeCode];
   }
 
-  // Seeded generation for any random fund from directory
   const seed = schemeCode % 100;
   const isLiquid = schemeName.toLowerCase().includes('liquid');
 
@@ -158,14 +156,13 @@ interface Page5ComparisonProps {
   setEndDate: (date: string) => void;
 }
 
-// Newton-Raphson solver for XIRR
 function calculateXIRR(cashFlows: { amount: number; date: Date }[]): number {
   if (cashFlows.length < 2) return 0;
 
   const maxIterations = 100;
   const tolerance = 1e-6;
 
-  let guess = 0.1; // initial guess of 10%
+  let guess = 0.1;
   const d1 = cashFlows[0].date.getTime();
 
   const xirrEquation = (r: number) => {
@@ -193,13 +190,12 @@ function calculateXIRR(cashFlows: { amount: number; date: Date }[]): number {
 
     if (Math.abs(nextGuess - guess) < tolerance) {
       if (isNaN(nextGuess) || !isFinite(nextGuess)) break;
-      return nextGuess * 100; // convert to percentage
+      return nextGuess * 100;
     }
 
     guess = nextGuess;
   }
 
-  // Fallback to simple ROI if Newton-Raphson fails to converge
   let totalInvested = 0;
   let finalValue = 0;
   cashFlows.forEach(cf => {
@@ -215,14 +211,12 @@ function calculateXIRR(cashFlows: { amount: number; date: Date }[]): number {
   return 0;
 }
 
-// Simulates a dynamic monthly SIP from startDate to endDate and computes XIRR
 function computeSIPXIRR(historicalData: { date: string; nav: number; parsedDate: Date }[], startStr: string, endStr: string): number | null {
   if (historicalData.length === 0) return null;
 
   const startTime = new Date(startStr).getTime();
   const endTime = new Date(endStr).getTime();
 
-  // Filter historical data in range and sort oldest-first
   const inRange = historicalData
     .filter(pt => {
       const t = pt.parsedDate.getTime();
@@ -230,19 +224,17 @@ function computeSIPXIRR(historicalData: { date: string; nav: number; parsedDate:
     })
     .sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
 
-  if (inRange.length < 10) return null; // Not enough data points to compute SIP XIRR
+  if (inRange.length < 10) return null;
 
   const firstDate = inRange[0].parsedDate;
   const lastDate = inRange[inRange.length - 1].parsedDate;
 
-  // Generate monthly SIP dates from firstDate to lastDate
   const sipInstallments: { amount: number; date: Date; nav: number }[] = [];
   const currentDate = new Date(firstDate);
 
   while (currentDate.getTime() <= lastDate.getTime()) {
     const targetTime = currentDate.getTime();
 
-    // Find closest trading day on or after targetTime in inRange
     let match = null;
     for (let i = 0; i < inRange.length; i++) {
       if (inRange[i].parsedDate.getTime() >= targetTime) {
@@ -259,13 +251,11 @@ function computeSIPXIRR(historicalData: { date: string; nav: number; parsedDate:
       });
     }
 
-    // Move to next month
     currentDate.setMonth(currentDate.getMonth() + 1);
   }
 
   if (sipInstallments.length < 2) return null;
 
-  // Calculate total units bought
   let totalUnits = 0;
   sipInstallments.forEach(inst => {
     totalUnits += 10000 / inst.nav;
@@ -274,13 +264,11 @@ function computeSIPXIRR(historicalData: { date: string; nav: number; parsedDate:
   const latestNav = inRange[inRange.length - 1].nav;
   const finalValue = totalUnits * latestNav;
 
-  // Build cash flow list for XIRR
   const cashFlows = sipInstallments.map(inst => ({
     amount: inst.amount,
     date: inst.date
   }));
 
-  // Add final value as positive inflow at the end
   cashFlows.push({
     amount: finalValue,
     date: lastDate
@@ -289,7 +277,6 @@ function computeSIPXIRR(historicalData: { date: string; nav: number; parsedDate:
   return calculateXIRR(cashFlows);
 }
 
-// Calculate CAGR (Annualized) return based on period return and period days
 const calculateCAGR = (periodReturnPct: number, days: number): number => {
   const periodReturn = periodReturnPct / 100;
   const cagr = Math.pow(1 + periodReturn, 365 / days) - 1;
@@ -312,18 +299,17 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
   endDate,
   setEndDate
 }) => {
-  const [searchQueries, setSearchQueries] = useState<{ [slotIndex: number]: string }>({ 0: '', 1: '', 2: '' });
-  const [searchResults, setSearchResults] = useState<{ [slotIndex: number]: MFSearchResult[] }>({ 0: [], 1: [], 2: [] });
-  const [isSearching, setIsSearching] = useState<{ [slotIndex: number]: boolean }>({ 0: false, 1: false, 2: false });
-  const [loadingSlot, setLoadingSlot] = useState<{ [slotIndex: number]: boolean }>({ 0: false, 1: false, 2: false });
+  const [slotCount, setSlotCount] = useState<number>(() => Math.max(3, selectedFunds.length || 3));
+  const [searchQueries, setSearchQueries] = useState<{ [slotIndex: number]: string }>({});
+  const [searchResults, setSearchResults] = useState<{ [slotIndex: number]: MFSearchResult[] }>({});
+  const [isSearching, setIsSearching] = useState<{ [slotIndex: number]: boolean }>({});
+  const [loadingSlot, setLoadingSlot] = useState<{ [slotIndex: number]: boolean }>({});
   const [allAvailableSchemes, setAllAvailableSchemes] = useState<MFSearchResult[]>([]);
 
-  // Load all schemes list for fallback search on mount
   useEffect(() => {
     fetchAllSchemes().then(schemes => setAllAvailableSchemes(schemes));
   }, []);
 
-  // Update start/end date when datePreset changes (unless custom is chosen)
   useEffect(() => {
     if (datePreset === 'CUSTOM') return;
 
@@ -336,7 +322,7 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
     else if (datePreset === '30D') days = 30;
     else if (datePreset === '90D') days = 90;
     else if (datePreset === '1Y') days = 365;
-    else if (datePreset === 'ALL') days = 3650; // Last 10 years
+    else if (datePreset === 'ALL') days = 3650;
 
     start.setDate(end.getDate() - days);
 
@@ -344,7 +330,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
     setEndDate(end.toISOString().split('T')[0]);
   }, [datePreset, setStartDate, setEndDate]);
 
-  // Handle adding a fund to a slot
   const handleSelectScheme = async (slotIndex: number, schemeCode: number) => {
     setLoadingSlot(prev => ({ ...prev, [slotIndex]: true }));
     try {
@@ -355,7 +340,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
         return next;
       });
       setVisibleFunds(prev => ({ ...prev, [schemeCode]: true }));
-      // Clear searches
       setSearchQueries(prev => ({ ...prev, [slotIndex]: '' }));
       setSearchResults(prev => ({ ...prev, [slotIndex]: [] }));
     } catch (err) {
@@ -365,7 +349,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
     }
   };
 
-  // Handle removing a fund from a slot
   const handleRemoveSlot = (slotIndex: number) => {
     setSelectedFunds(prev => {
       const next = [...prev];
@@ -374,7 +357,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
     });
   };
 
-  // Handle slot query search changes
   const handleSearchChange = async (slotIndex: number, query: string) => {
     setSearchQueries(prev => ({ ...prev, [slotIndex]: query }));
     if (query.trim().length >= 2) {
@@ -387,7 +369,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
     }
   };
 
-  // Generate chart data based on selected metric, date range, and visibility
   const chartData = useMemo(() => {
     const activeFunds = selectedFunds.filter(f => f && visibleFunds[f.schemeCode]);
     if (activeFunds.length === 0) return [];
@@ -398,7 +379,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
 
     activeFunds.forEach(fund => {
       const history = fund.historicalData;
-      // Filter points by exact start and end date range, and sort oldest-first
       const validPoints = history
         .filter(pt => {
           const t = pt.parsedDate.getTime();
@@ -420,11 +400,9 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
         const row = dateMap.get(dateKey)!;
 
         if (comparisonMetric === 'NAV') {
-          // Rebased comparison for NAV to make them comparable
           const rebasedVal = baseNav > 0 ? (pt.nav / baseNav) * 100 : 100;
           row[fund.schemeName] = Math.round(rebasedVal * 100) / 100;
         } else {
-          // Calculate annualized return (CAGR) at this historical point
           const days = comparisonMetric === '7D' ? 7 : comparisonMetric === '15D' ? 15 : 30;
           const targetTime = pt.parsedDate.getTime();
           const pastTime = targetTime - (days * 24 * 60 * 60 * 1000);
@@ -436,13 +414,12 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
               break;
             }
           }
-          if (pastIdx === -1) pastIdx = 0; // Fallback to oldest point in valid points
+          if (pastIdx === -1) pastIdx = 0;
 
           const currentNav = pt.nav;
           const pastNav = validPoints[pastIdx]?.nav || 0;
           const periodReturnPct = pastNav > 0 ? ((currentNav - pastNav) / pastNav) * 100 : 0;
 
-          // Apply CAGR Annualization Formula
           row[fund.schemeName] = calculateCAGR(periodReturnPct, days);
         }
       });
@@ -454,7 +431,12 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
     return interpolateMissingData(sortedData, activeFunds.map(f => f.schemeName));
   }, [selectedFunds, visibleFunds, comparisonMetric, startDate, endDate]);
 
-  const colors = ['#2563eb', '#10b981', '#f59e0b'];
+  const colors = ['#2563eb', '#10b981', '#f59e0b', '#7c3aed', '#db2777', '#0891b2', '#e11d48', '#65a30d'];
+
+  const slotIndices = useMemo(() => {
+    const totalSlots = Math.max(3, slotCount, selectedFunds.length);
+    return Array.from({ length: totalSlots }, (_, i) => i);
+  }, [slotCount, selectedFunds.length]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -466,27 +448,51 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
         </div>
         <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '4px', color: 'var(--text-primary)' }}>Mutual Fund Side-by-Side Comparison</h2>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-          Compare up to 3 mutual funds side-by-side. Displays annualized CAGR and dynamic SIP XIRR returns over selected date ranges.
+          Add unlimited mutual fund comparison slots (3 visible at a time with side-scrolling). Displays annualized CAGR and dynamic SIP XIRR returns.
         </p>
       </div>
 
-      {/* Comparison Grid (Max 3 slots) */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
-        {[0, 1, 2].map(idx => {
+      {/* Comparison Grid (Horizontal Scroll, 3 slots visible at a time) */}
+      <div
+        style={{
+          display: 'flex',
+          gap: '16px',
+          overflowX: 'auto',
+          paddingBottom: '12px',
+          scrollSnapType: 'x mandatory'
+        }}
+      >
+        {slotIndices.map(idx => {
           const fund = selectedFunds[idx];
           const query = searchQueries[idx] || '';
           const results = searchResults[idx] || [];
           const searching = isSearching[idx] || false;
           const loading = loadingSlot[idx] || false;
 
-          // Compute Dynamic SIP XIRR Return
           const sipXirr = fund ? computeSIPXIRR(fund.historicalData, startDate, endDate) : null;
+          const slotColor = colors[idx % colors.length];
 
           return (
-            <div key={idx} className="card-panel" style={{ position: 'relative', minHeight: '340px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', borderTop: fund ? `4px solid ${colors[idx]}` : '1px solid var(--border-light)' }}>
+            <div
+              key={idx}
+              className="card-panel"
+              style={{
+                flex: '0 0 calc(33.333% - 11px)',
+                minWidth: '290px',
+                scrollSnapAlign: 'start',
+                position: 'relative',
+                minHeight: '350px',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+                borderTop: fund ? `4px solid ${slotColor}` : '1px solid var(--border-light)'
+              }}
+            >
               {/* Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '12px' }}>
-                <span className="badge" style={{ backgroundColor: '#f1f5f9', color: 'var(--text-muted)', fontSize: '0.68rem', textTransform: 'uppercase' }}>Slot {idx + 1}</span>
+                <span className="badge" style={{ backgroundColor: '#f1f5f9', color: 'var(--text-muted)', fontSize: '0.68rem', textTransform: 'uppercase' }}>
+                  Slot {idx + 1}
+                </span>
                 {fund && (
                   <button onClick={() => handleRemoveSlot(idx)} className="btn btn-outline" style={{ padding: '4px', borderRadius: '50%', color: 'var(--text-muted)' }}>
                     <X size={14} />
@@ -500,7 +506,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
                   <span style={{ fontSize: '0.75rem', marginTop: '8px' }}>Loading Scheme details...</span>
                 </div>
               ) : fund ? (
-                /* Fund Details Card content */
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   <div>
                     <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)', lineHeight: '1.3' }} title={fund.schemeName}>
@@ -519,7 +524,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
                       <span style={{ fontWeight: 700, color: 'var(--color-success)' }}>₹{fund.latestNav.toFixed(4)}</span>
                     </div>
 
-                    {/* Annualized Returns (CAGR) using (1+period return)^(365/days) - 1 */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', borderTop: '1px dashed var(--border-light)', paddingTop: '6px', marginTop: '4px' }}>
                       <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>7D Annualized (CAGR):</span>
                       <span style={{ fontWeight: 700, color: fund.return7d >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
@@ -539,7 +543,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
                       </span>
                     </div>
 
-                    {/* SIP XIRR calculation over Selected Date Range */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', borderTop: '1px solid var(--border-light)', paddingTop: '6px', marginTop: '4px', backgroundColor: 'var(--color-primary-light)', padding: '6px 8px', borderRadius: '4px' }}>
                       <span style={{ color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
                         <Percent size={12} /> SIP XIRR (Range):
@@ -551,7 +554,6 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
                   </div>
                 </div>
               ) : (
-                /* Empty Slot selection dropdown/search */
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                   <div className="relative">
                     <Search size={14} className="search-icon-left" style={{ left: '10px' }} />
@@ -618,9 +620,9 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
                   )}
 
                   <div style={{ marginTop: '12px', textAlign: 'center' }}>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>or choose from pinned schemes:</span>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', marginTop: '8px' }}>
-                      {pinnedFunds.filter(f => !selectedFunds.some(sf => sf && sf.schemeCode === f.schemeCode)).slice(0, 4).map(f => (
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>or choose from pinned schemes ({pinnedFunds.length}):</span>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', marginTop: '8px', maxHeight: '120px', overflowY: 'auto' }}>
+                      {pinnedFunds.filter(f => !selectedFunds.some(sf => sf && sf.schemeCode === f.schemeCode)).map(f => (
                         <button
                           key={f.schemeCode}
                           onClick={() => handleSelectScheme(idx, f.schemeCode)}
@@ -639,6 +641,33 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
             </div>
           );
         })}
+
+        {/* Add Slot Button Card */}
+        <div
+          className="card-panel"
+          style={{
+            flex: '0 0 calc(33.333% - 11px)',
+            minWidth: '220px',
+            minHeight: '350px',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            border: '2px dashed var(--border-medium)',
+            backgroundColor: '#f8fafc',
+            scrollSnapAlign: 'start'
+          }}
+          onClick={() => setSlotCount(prev => Math.max(prev + 1, selectedFunds.length + 1))}
+        >
+          <Plus size={36} style={{ color: 'var(--color-primary)' }} />
+          <span style={{ fontWeight: 700, fontSize: '0.85rem', marginTop: '8px', color: 'var(--color-primary)' }}>
+            + Add Comparison Slot
+          </span>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+            (Side-scroll to view all slots)
+          </span>
+        </div>
       </div>
 
       {/* Chart controls & Visualization */}
