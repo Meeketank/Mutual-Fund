@@ -20,48 +20,89 @@ export const Page2NAVComparisonGrid: React.FC<Page2Props> = ({
 
   const gridData = useMemo(() => {
     if (pinnedFunds.length === 0) return [];
-    const dateMap = new Map<string, { dateDisplay: string; parsedTime: number; navs: { [schemeCode: number]: number } }>();
+
+    let newestTime = 0;
+    let oldestTime = Infinity;
+
+    const fundDateMaps = new Map<number, Map<string, number>>();
 
     pinnedFunds.forEach(fund => {
+      const fMap = new Map<string, number>();
       fund.historicalData.forEach(pt => {
-        const dateKey = pt.date;
-        if (!dateMap.has(dateKey)) {
-          dateMap.set(dateKey, {
-            dateDisplay: formatDateDisplay(pt.date),
-            parsedTime: pt.parsedDate.getTime(),
-            navs: {}
-          });
-        }
-        const row = dateMap.get(dateKey)!;
-        row.navs[fund.schemeCode] = pt.nav;
+        const yyyy = pt.parsedDate.getFullYear();
+        const mm = String(pt.parsedDate.getMonth() + 1).padStart(2, '0');
+        const dd = String(pt.parsedDate.getDate()).padStart(2, '0');
+        const key = `${yyyy}-${mm}-${dd}`;
+        fMap.set(key, pt.nav);
+
+        const t = pt.parsedDate.getTime();
+        if (t > newestTime) newestTime = t;
+        if (t < oldestTime) oldestTime = t;
       });
+      fundDateMaps.set(fund.schemeCode, fMap);
     });
 
-    let rows = Array.from(dateMap.values());
+    if (newestTime === 0 || oldestTime === Infinity) return [];
 
-    if (dateRangePreset !== 'ALL') {
-      const now = new Date();
-      let days = 30;
-      if (dateRangePreset === '7D') days = 7;
-      if (dateRangePreset === '15D') days = 15;
-      if (dateRangePreset === '30D') days = 30;
-      if (dateRangePreset === '90D') days = 90;
-      if (dateRangePreset === '1Y') days = 365;
+    let daysToInclude = 30;
+    if (dateRangePreset === '7D') daysToInclude = 7;
+    if (dateRangePreset === '15D') daysToInclude = 15;
+    if (dateRangePreset === '30D') daysToInclude = 30;
+    if (dateRangePreset === '90D') daysToInclude = 90;
+    if (dateRangePreset === '1Y') daysToInclude = 365;
+    if (dateRangePreset === 'ALL') daysToInclude = 3650;
 
-      const cutoff = now.getTime() - days * 24 * 60 * 60 * 1000;
-      rows = rows.filter(r => r.parsedTime >= cutoff);
+    const now = new Date();
+    const cutoffTime = now.getTime() - daysToInclude * 24 * 60 * 60 * 1000;
+    const startGenTime = Math.max(oldestTime, cutoffTime);
+
+    const lastKnownNavs: { [schemeCode: number]: number } = {};
+
+    pinnedFunds.forEach(fund => {
+      if (fund.historicalData.length > 0) {
+        lastKnownNavs[fund.schemeCode] = fund.historicalData[0].nav;
+      }
+    });
+
+    const dailyRows: { dateDisplay: string; parsedTime: number; navs: { [schemeCode: number]: number }; isWeekend: boolean }[] = [];
+    let curr = new Date(newestTime);
+
+    while (curr.getTime() >= startGenTime && dailyRows.length < 1000) {
+      const yyyy = curr.getFullYear();
+      const mm = String(curr.getMonth() + 1).padStart(2, '0');
+      const dd = String(curr.getDate()).padStart(2, '0');
+      const key = `${yyyy}-${mm}-${dd}`;
+
+      pinnedFunds.forEach(fund => {
+        const fMap = fundDateMaps.get(fund.schemeCode);
+        if (fMap && fMap.has(key)) {
+          lastKnownNavs[fund.schemeCode] = fMap.get(key)!;
+        }
+      });
+
+      const dayOfWeek = curr.getDay();
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+      dailyRows.push({
+        dateDisplay: formatDateDisplay(curr),
+        parsedTime: curr.getTime(),
+        navs: { ...lastKnownNavs },
+        isWeekend
+      });
+
+      curr.setDate(curr.getDate() - 1);
     }
 
-    rows.sort((a, b) => {
-      return sortOrder === 'desc' ? b.parsedTime - a.parsedTime : a.parsedTime - b.parsedTime;
-    });
+    if (sortOrder === 'asc') {
+      dailyRows.reverse();
+    }
 
     if (dateSearch.trim()) {
       const q = dateSearch.toLowerCase().trim();
-      rows = rows.filter(r => r.dateDisplay.toLowerCase().includes(q));
+      return dailyRows.filter(r => r.dateDisplay.toLowerCase().includes(q));
     }
 
-    return rows;
+    return dailyRows;
   }, [pinnedFunds, dateRangePreset, sortOrder, dateSearch]);
 
   const handleExportCSV = () => {
