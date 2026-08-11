@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Building2, Sparkles, BarChart3, ArrowUpRight, Activity } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -8,7 +8,8 @@ import {
   YAxis,
   Tooltip,
   Legend,
-  CartesianGrid
+  CartesianGrid,
+  Brush
 } from 'recharts';
 import { PinnedFund, GranularNAVRow } from '../types/mf';
 import { generateAMCNAVRows } from '../services/amfiApi';
@@ -26,6 +27,9 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({
     pinnedFunds[0]?.schemeCode || null
   );
   const [rowLimit, setRowLimit] = useState<number>(60);
+  const [magnifyDifferences, setMagnifyDifferences] = useState<boolean>(true);
+  const [zoomDays, setZoomDays] = useState<number>(60);
+  const [panOffset, setPanOffset] = useState<number>(0);
 
   const selectedFund = useMemo(() => {
     if (!selectedSchemeCode) return pinnedFunds[0] || null;
@@ -46,6 +50,76 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({
       '30D Return (% p.a.)': r.rollingReturn30dAnn
     }));
   }, [granularRows]);
+
+  const slicedRawData = useMemo(() => {
+    if (chartData.length === 0) return [];
+    const N = chartData.length;
+    const windowSize = Math.min(N, zoomDays);
+    const offset = Math.min(N - windowSize, panOffset);
+    const startIdx = Math.max(0, N - windowSize - offset);
+    const endIdx = Math.min(N, startIdx + windowSize);
+    return chartData.slice(startIdx, endIdx);
+  }, [chartData, zoomDays, panOffset]);
+
+  const interpolationSteps = useMemo(() => {
+    const days = slicedRawData.length;
+    if (days <= 15) return 12;
+    if (days <= 30) return 8;
+    if (days <= 60) return 4;
+    if (days <= 90) return 2;
+    return 1;
+  }, [slicedRawData]);
+
+  const interpolatedChartData = useMemo(() => {
+    const steps = interpolationSteps;
+    if (steps <= 1 || slicedRawData.length < 2) return slicedRawData;
+
+    const result: any[] = [];
+    for (let i = 0; i < slicedRawData.length - 1; i++) {
+      const current = slicedRawData[i];
+      const next = slicedRawData[i + 1];
+
+      result.push(current);
+
+      for (let step = 1; step < steps; step++) {
+        const t = step / steps;
+        const navCurr = current.NAV ?? 0;
+        const navNext = next.NAV ?? 0;
+        const ret7dCurr = current['7D Return (% p.a.)'] ?? 0;
+        const ret7dNext = next['7D Return (% p.a.)'] ?? 0;
+        const ret15dCurr = current['15D Return (% p.a.)'] ?? 0;
+        const ret15dNext = next['15D Return (% p.a.)'] ?? 0;
+        const ret30dCurr = current['30D Return (% p.a.)'] ?? 0;
+        const ret30dNext = next['30D Return (% p.a.)'] ?? 0;
+
+        result.push({
+          date: `${current.date}${"\u200B".repeat(step)}`,
+          isIntermediate: true,
+          NAV: Number((navCurr + (navNext - navCurr) * t).toFixed(4)),
+          '7D Return (% p.a.)': Number((ret7dCurr + (ret7dNext - ret7dCurr) * t).toFixed(2)),
+          '15D Return (% p.a.)': Number((ret15dCurr + (ret15dNext - ret15dCurr) * t).toFixed(2)),
+          '30D Return (% p.a.)': Number((ret30dCurr + (ret30dNext - ret30dCurr) * t).toFixed(2)),
+        });
+      }
+    }
+    result.push(slicedRawData[slicedRawData.length - 1]);
+    return result;
+  }, [slicedRawData, interpolationSteps]);
+
+  useEffect(() => {
+    setZoomDays(rowLimit);
+    setPanOffset(0);
+  }, [selectedSchemeCode, rowLimit]);
+
+  const setZoomPreset = (days: number) => {
+    setZoomDays(Math.min(rowLimit, days));
+    setPanOffset(0);
+  };
+
+  const resetZoom = () => {
+    setZoomDays(rowLimit);
+    setPanOffset(0);
+  };
 
   const metrics = useMemo(() => {
     if (!selectedFund || granularRows.length === 0) return null;
@@ -165,22 +239,131 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({
 
           {/* Recharts chart */}
           <div className="card-panel">
-            <h3 className="card-title" style={{ marginBottom: '16px' }}>Annualized Rolling Returns (% p.a.) & Historical NAV</h3>
-            <div style={{ height: '320px', width: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+              <h3 className="card-title" style={{ margin: 0 }}>Annualized Rolling Returns (% p.a.) & Historical NAV</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={magnifyDifferences}
+                    onChange={(e) => setMagnifyDifferences(e.target.checked)}
+                    style={{ accentColor: 'var(--color-purple)', cursor: 'pointer', width: '14px', height: '14px' }}
+                  />
+                  <span>Magnify Small Differences (Auto-Scale Y-Axis)</span>
+                </label>
+                <span style={{ height: '16px', width: '1px', backgroundColor: 'var(--border-light)' }} />
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Zoom visible:</span>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <button
+                    onClick={() => setZoomPreset(7)}
+                    className="btn btn-outline"
+                    style={{ padding: '4px 8px', fontSize: '0.7rem', height: '26px' }}
+                  >
+                    7D
+                  </button>
+                  <button
+                    onClick={() => setZoomPreset(15)}
+                    className="btn btn-outline"
+                    style={{ padding: '4px 8px', fontSize: '0.7rem', height: '26px' }}
+                  >
+                    15D
+                  </button>
+                  <button
+                    onClick={() => setZoomPreset(30)}
+                    className="btn btn-outline"
+                    style={{ padding: '4px 8px', fontSize: '0.7rem', height: '26px' }}
+                  >
+                    30D
+                  </button>
+                  <button
+                    onClick={resetZoom}
+                    className="btn btn-outline"
+                    style={{ padding: '4px 8px', fontSize: '0.7rem', height: '26px', backgroundColor: 'var(--color-purple-light)', borderColor: 'var(--accent-purple-border)' }}
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div style={{ height: '360px', width: '100%' }}>
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={chartData} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
+                <ComposedChart data={interpolatedChartData} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="date" stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 11 }} />
+                  <XAxis
+                    dataKey="date"
+                    stroke="#94a3b8"
+                    tick={{ fill: '#64748b', fontSize: 11 }}
+                    tickFormatter={v => (typeof v === 'string' && v.includes('\u200B') ? '' : v)}
+                  />
                   <YAxis yAxisId="left" stroke="#7c3aed" tick={{ fill: '#7c3aed', fontSize: 11 }} domain={['auto', 'auto']} tickFormatter={v => `₹${v}`} />
-                  <YAxis yAxisId="right" orientation="right" stroke="#059669" tick={{ fill: '#059669', fontSize: 11 }} tickFormatter={v => `${v}%`} />
-                  <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1', borderRadius: '8px', fontSize: '12px' }} />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    stroke="#059669"
+                    tick={{ fill: '#059669', fontSize: 11 }}
+                    tickFormatter={v => `${v}%`}
+                    domain={magnifyDifferences ? ['auto', 'auto'] : [(dataMin: number) => Math.min(0, dataMin), (dataMax: number) => Math.max(10, dataMax)]}
+                  />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1', borderRadius: '8px', fontSize: '12px' }}
+                    cursor={{ stroke: '#cbd5e1', strokeWidth: 1.5, strokeDasharray: '4 4' }}
+                    labelFormatter={v => (typeof v === 'string' ? v.replace(/\u200B/g, '') : v)}
+                  />
                   <Legend wrapperStyle={{ paddingTop: '10px', fontSize: '12px' }} />
-                  <Line yAxisId="left" type="monotone" dataKey="NAV" stroke="#7c3aed" strokeWidth={2.5} dot={false} name="NAV (₹)" />
-                  <Line yAxisId="right" type="monotone" dataKey="7D Return (% p.a.)" stroke="#2563eb" strokeWidth={1.5} dot={false} name="7D Ann (% p.a.)" />
-                  <Line yAxisId="right" type="monotone" dataKey="15D Return (% p.a.)" stroke="#d97706" strokeWidth={1.5} dot={false} name="15D Ann (% p.a.)" />
-                  <Line yAxisId="right" type="monotone" dataKey="30D Return (% p.a.)" stroke="#059669" strokeWidth={2} dot={false} name="30D Ann (% p.a.)" />
+                  <Line yAxisId="left" type="monotone" dataKey="NAV" stroke="#7c3aed" strokeWidth={2.5} dot={false} name="NAV (₹)" isAnimationActive={false} activeDot={{ r: 6 }} />
+                  <Line yAxisId="right" type="monotone" dataKey="7D Return (% p.a.)" stroke="#2563eb" strokeWidth={1.5} dot={false} name="7D Ann (% p.a.)" isAnimationActive={false} activeDot={{ r: 5 }} />
+                  <Line yAxisId="right" type="monotone" dataKey="15D Return (% p.a.)" stroke="#d97706" strokeWidth={1.5} dot={false} name="15D Ann (% p.a.)" isAnimationActive={false} activeDot={{ r: 5 }} />
+                  <Line yAxisId="right" type="monotone" dataKey="30D Return (% p.a.)" stroke="#059669" strokeWidth={2} dot={false} name="30D Ann (% p.a.)" isAnimationActive={false} activeDot={{ r: 6 }} />
                 </ComposedChart>
               </ResponsiveContainer>
+            </div>
+
+            {/* Custom Zoom & Pan Sliders */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px', padding: '12px 18px', backgroundColor: '#f8fafc', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', fontFamily: 'var(--font-heading)', letterSpacing: '0.02em' }}>🔧 Chart Zoom & Scroll Controls</span>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Zoom in on short intervals to view minor variations</span>
+              </div>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+                {/* Zoom Slider */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 600 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Zoom Window: {zoomDays} Days</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{zoomDays === rowLimit ? 'Show All' : 'Zoomed'}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="5"
+                    max={rowLimit}
+                    value={zoomDays}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setZoomDays(val);
+                      // Ensure pan offset is in bounds
+                      setPanOffset(prev => Math.min(prev, rowLimit - val));
+                    }}
+                    style={{ width: '100%', accentColor: 'var(--color-purple)', cursor: 'pointer' }}
+                  />
+                </div>
+                
+                {/* Pan Slider */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 600 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Scroll / Pan Timeframe</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{panOffset === 0 ? 'Latest' : `${panOffset} Days Ago`}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max={rowLimit - zoomDays}
+                    value={panOffset}
+                    onChange={(e) => setPanOffset(Number(e.target.value))}
+                    disabled={rowLimit === zoomDays}
+                    style={{ width: '100%', accentColor: 'var(--color-purple)', cursor: 'pointer', opacity: rowLimit === zoomDays ? 0.4 : 1 }}
+                  />
+                </div>
+              </div>
             </div>
           </div>
 

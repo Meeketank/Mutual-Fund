@@ -13,131 +13,16 @@ import {
 import { PinnedFund, MFSearchResult } from '../types/mf';
 import { fetchFundDetail, searchSchemes, fetchAllSchemes, interpolateMissingData } from '../services/amfiApi';
 
-interface PortfolioData {
-  assetAllocation: {
-    cash: number;
-    cd: number;
-    cp: number;
-    gsec: number;
-    tbills: number;
-    corpDebt: number;
-  };
-  topHoldings: { company: string; weight: number; instrument: string }[];
-}
-
-const DEFAULT_PORTFOLIOS: { [code: number]: PortfolioData } = {
-  120503: { // ABSL Money Manager
-    assetAllocation: { cash: 3.2, cd: 35.4, cp: 45.2, gsec: 5.1, tbills: 6.3, corpDebt: 4.8 },
-    topHoldings: [
-      { company: 'HDFC Bank Ltd.', weight: 8.5, instrument: 'Commercial Paper' },
-      { company: 'NABARD', weight: 7.2, instrument: 'Certificate of Deposit' },
-      { company: 'SIDBI', weight: 6.8, instrument: 'Certificate of Deposit' },
-      { company: 'Government of India', weight: 6.3, instrument: 'Treasury Bills' },
-      { company: 'Reliance Industries Ltd.', weight: 5.4, instrument: 'Commercial Paper' }
-    ]
-  },
-  147820: { // Axis Money Market
-    assetAllocation: { cash: 2.1, cd: 40.5, cp: 38.2, gsec: 8.2, tbills: 7.0, corpDebt: 4.0 },
-    topHoldings: [
-      { company: 'Canara Bank', weight: 9.1, instrument: 'Certificate of Deposit' },
-      { company: 'SIDBI', weight: 8.0, instrument: 'Certificate of Deposit' },
-      { company: 'NTPC Ltd.', weight: 6.5, instrument: 'Commercial Paper' },
-      { company: 'Government of India', weight: 7.0, instrument: 'Treasury Bills' },
-      { company: 'ICICI Bank Ltd.', weight: 5.2, instrument: 'Certificate of Deposit' }
-    ]
-  },
-  120716: { // Bandhan Money Market
-    assetAllocation: { cash: 4.5, cd: 32.1, cp: 48.0, gsec: 3.4, tbills: 8.0, corpDebt: 4.0 },
-    topHoldings: [
-      { company: 'NABARD', weight: 8.2, instrument: 'Certificate of Deposit' },
-      { company: 'Export-Import Bank of India', weight: 7.5, instrument: 'Certificate of Deposit' },
-      { company: 'L&T Finance Ltd.', weight: 6.0, instrument: 'Commercial Paper' },
-      { company: 'Government of India', weight: 8.0, instrument: 'Treasury Bills' },
-      { company: 'Axis Bank Ltd.', weight: 5.5, instrument: 'Certificate of Deposit' }
-    ]
-  },
-  120594: { // ICICI Pru Money Market
-    assetAllocation: { cash: 2.8, cd: 38.2, cp: 42.4, gsec: 6.0, tbills: 7.2, corpDebt: 3.4 },
-    topHoldings: [
-      { company: 'HDFC Bank Ltd.', weight: 9.2, instrument: 'Certificate of Deposit' },
-      { company: 'SIDBI', weight: 7.8, instrument: 'Certificate of Deposit' },
-      { company: 'Government of India', weight: 7.2, instrument: 'Treasury Bills' },
-      { company: 'Reliance Industries Ltd.', weight: 6.1, instrument: 'Commercial Paper' },
-      { company: 'Tata Power Company Ltd.', weight: 4.9, instrument: 'Commercial Paper' }
-    ]
-  },
-  119800: { // Nippon India Money Market
-    assetAllocation: { cash: 3.5, cd: 34.0, cp: 46.5, gsec: 4.2, tbills: 7.8, corpDebt: 4.0 },
-    topHoldings: [
-      { company: 'Export-Import Bank of India', weight: 8.4, instrument: 'Certificate of Deposit' },
-      { company: 'SIDBI', weight: 7.9, instrument: 'Certificate of Deposit' },
-      { company: 'Government of India', weight: 7.8, instrument: 'Treasury Bills' },
-      { company: 'Reliance Industries Ltd.', weight: 6.0, instrument: 'Commercial Paper' },
-      { company: 'L&T Finance Ltd.', weight: 5.1, instrument: 'Commercial Paper' }
-    ]
-  },
-  120739: { // UTI Money Market
-    assetAllocation: { cash: 4.0, cd: 36.5, cp: 41.0, gsec: 6.5, tbills: 8.0, corpDebt: 4.0 },
-    topHoldings: [
-      { company: 'HDFC Bank Ltd.', weight: 8.0, instrument: 'Certificate of Deposit' },
-      { company: 'SIDBI', weight: 7.5, instrument: 'Certificate of Deposit' },
-      { company: 'Government of India', weight: 8.0, instrument: 'Treasury Bills' },
-      { company: 'NABARD', weight: 7.0, instrument: 'Certificate of Deposit' },
-      { company: 'Axis Bank Ltd.', weight: 6.2, instrument: 'Certificate of Deposit' }
-    ]
-  },
-  120349: { // HSBC Liquid
-    assetAllocation: { cash: 5.2, cd: 45.0, cp: 48.0, gsec: 0.8, tbills: 1.0, corpDebt: 0.0 },
-    topHoldings: [
-      { company: 'Canara Bank', weight: 9.8, instrument: 'Certificate of Deposit' },
-      { company: 'HDFC Bank Ltd.', weight: 9.0, instrument: 'Certificate of Deposit' },
-      { company: 'SIDBI', weight: 8.4, instrument: 'Certificate of Deposit' },
-      { company: 'NABARD', weight: 7.8, instrument: 'Certificate of Deposit' },
-      { company: 'Axis Bank Ltd.', weight: 6.5, instrument: 'Certificate of Deposit' }
-    ]
-  },
-  119253: { // Baroda BNP Paribas Liquid
-    assetAllocation: { cash: 6.0, cd: 43.5, cp: 49.0, gsec: 0.5, tbills: 1.0, corpDebt: 0.0 },
-    topHoldings: [
-      { company: 'NABARD', weight: 9.5, instrument: 'Certificate of Deposit' },
-      { company: 'SIDBI', weight: 8.8, instrument: 'Certificate of Deposit' },
-      { company: 'Bank of Baroda', weight: 8.2, instrument: 'Certificate of Deposit' },
-      { company: 'Canara Bank', weight: 7.9, instrument: 'Certificate of Deposit' },
-      { company: 'Export-Import Bank of India', weight: 6.8, instrument: 'Certificate of Deposit' }
-    ]
-  }
-};
-
-function getPortfolioAllocation(schemeCode: number, schemeName: string): PortfolioData {
-  if (DEFAULT_PORTFOLIOS[schemeCode]) {
-    return DEFAULT_PORTFOLIOS[schemeCode];
-  }
-
-  const seed = schemeCode % 100;
-  const isLiquid = schemeName.toLowerCase().includes('liquid');
-
-  const cash = Math.round((2.0 + (seed % 5)) * 10) / 10;
-  const cd = isLiquid ? Math.round((40.0 + (seed % 10)) * 10) / 10 : Math.round((30.0 + (seed % 15)) * 10) / 10;
-  const cp = isLiquid ? Math.round((45.0 - (seed % 5)) * 10) / 10 : Math.round((40.0 - (seed % 10)) * 10) / 10;
-  const corpDebt = isLiquid ? 0.0 : Math.round((2.0 + (seed % 8)) * 10) / 10;
-  const gsec = Math.round((1.0 + (seed % 6)) * 10) / 10;
-  const tbills = Math.round((100.0 - (cash + cd + cp + corpDebt + gsec)) * 10) / 10;
-
-  const amcPrefix = schemeName.split(' ')[0] || 'State Bank';
-
-  const topHoldings = [
-    { company: `${amcPrefix} Bank CP`, weight: Math.round((8.0 + (seed % 3)) * 10) / 10, instrument: 'Commercial Paper' },
-    { company: 'Government of India', weight: tbills > 0 ? tbills : 5.0, instrument: 'Treasury Bills' },
-    { company: 'SIDBI CD', weight: Math.round((7.0 + (seed % 2)) * 10) / 10, instrument: 'Certificate of Deposit' },
-    { company: 'NABARD CD', weight: Math.round((6.5 + (seed % 3)) * 10) / 10, instrument: 'Certificate of Deposit' },
-    { company: 'Corporate NCD Series', weight: Math.round((5.0 + (seed % 4)) * 10) / 10, instrument: 'Corporate Debt' }
-  ].sort((a, b) => b.weight - a.weight);
-
-  return {
-    assetAllocation: { cash, cd, cp, gsec, tbills: Math.max(0, tbills), corpDebt },
-    topHoldings
-  };
-}
+// NOTE: Portfolio / asset-allocation / top-holdings data has been removed.
+// mfapi.in (https://api.mfapi.in) only exposes historical NAV + basic scheme
+// metadata — there is no free, reliable, real-time API for CD/CP/G-Sec
+// allocation weights or underlying company holdings for Indian mutual funds.
+// The previous implementation used a hardcoded lookup table plus a
+// seeded-random fallback generator, which produced fabricated numbers that
+// looked plausible but were not real. Rather than ship false data, that
+// section has been removed entirely. If a real data source (AMC factsheet
+// scrape, MFCentral, Value Research, a paid provider like FMP, etc.) is
+// wired up later, this section can be reintroduced against real data.
 
 interface Page5ComparisonProps {
   pinnedFunds: PinnedFund[];
@@ -306,6 +191,10 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
   const [loadingSlot, setLoadingSlot] = useState<{ [slotIndex: number]: boolean }>({});
   const [allAvailableSchemes, setAllAvailableSchemes] = useState<MFSearchResult[]>([]);
 
+  // Custom Zoom & Scroll states for the comparison chart
+  const [compZoomDays, setCompZoomDays] = useState<number>(0);
+  const [compPanOffset, setCompPanOffset] = useState<number>(0);
+
   useEffect(() => {
     fetchAllSchemes().then(schemes => setAllAvailableSchemes(schemes));
   }, []);
@@ -378,18 +267,26 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
     const endTime = new Date(endDate).getTime();
 
     activeFunds.forEach(fund => {
-      const history = fund.historicalData;
-      const validPoints = history
-        .filter(pt => {
-          const t = pt.parsedDate.getTime();
-          return t >= startTime && t <= endTime;
-        })
-        .sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
+      // Use the FULL history (sorted) as the lookback source. Trailing-return
+      // metrics (7D/15D/30D) for a date near the start of the visible range
+      // need NAV data from *before* that range to compute a real return —
+      // slicing to [startDate, endDate] first (as the old code did) meant
+      // there was nothing to look back to, so early points fell back to a
+      // same-point comparison and plotted as ~0%. The date range should only
+      // control which points get *drawn*, not which points are valid anchors.
+      const fullHistory = [...fund.historicalData].sort(
+        (a, b) => a.parsedDate.getTime() - b.parsedDate.getTime()
+      );
 
-      if (validPoints.length === 0) return;
-      const baseNav = validPoints[0]?.nav || fund.latestNav;
+      const inRangePoints = fullHistory.filter(pt => {
+        const t = pt.parsedDate.getTime();
+        return t >= startTime && t <= endTime;
+      });
 
-      validPoints.forEach((pt, index) => {
+      if (inRangePoints.length === 0) return;
+      const baseNav = inRangePoints[0]?.nav || fund.latestNav;
+
+      inRangePoints.forEach(pt => {
         const dateKey = pt.date;
         if (!dateMap.has(dateKey)) {
           dateMap.set(dateKey, {
@@ -407,20 +304,25 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
           const targetTime = pt.parsedDate.getTime();
           const pastTime = targetTime - (days * 24 * 60 * 60 * 1000);
 
-          let pastIdx = -1;
-          for (let j = index - 1; j >= 0; j--) {
-            if (validPoints[j].parsedDate.getTime() <= pastTime) {
-              pastIdx = j;
+          // Search the full history for the closest point at or before pastTime.
+          let pastPoint: { date: string; nav: number; parsedDate: Date } | null = null;
+          for (let j = fullHistory.length - 1; j >= 0; j--) {
+            if (fullHistory[j].parsedDate.getTime() <= pastTime) {
+              pastPoint = fullHistory[j];
               break;
             }
           }
-          if (pastIdx === -1) pastIdx = 0;
 
-          const currentNav = pt.nav;
-          const pastNav = validPoints[pastIdx]?.nav || 0;
-          const periodReturnPct = pastNav > 0 ? ((currentNav - pastNav) / pastNav) * 100 : 0;
-
-          row[fund.schemeName] = calculateCAGR(periodReturnPct, days);
+          if (pastPoint) {
+            const currentNav = pt.nav;
+            const pastNav = pastPoint.nav;
+            const periodReturnPct = pastNav > 0 ? ((currentNav - pastNav) / pastNav) * 100 : 0;
+            row[fund.schemeName] = calculateCAGR(periodReturnPct, days);
+          }
+          // If there's genuinely no data far enough back (e.g. the scheme
+          // itself is younger than `days`), leave this fund's value unset
+          // for this date instead of plotting a false 0% — interpolateMissingData
+          // will bridge the gap from the nearest real values.
         }
       });
     });
@@ -430,6 +332,66 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
     );
     return interpolateMissingData(sortedData, activeFunds.map(f => f.schemeName));
   }, [selectedFunds, visibleFunds, comparisonMetric, startDate, endDate]);
+
+  // Sync zoom and scroll ranges when chartData length changes
+  useEffect(() => {
+    setCompZoomDays(chartData.length);
+    setCompPanOffset(0);
+  }, [chartData.length]);
+
+  const slicedChartData = useMemo(() => {
+    if (chartData.length === 0) return [];
+    const N = chartData.length;
+    const windowSize = compZoomDays > 0 ? Math.min(N, compZoomDays) : N;
+    const offset = Math.min(N - windowSize, compPanOffset);
+    const startIdx = Math.max(0, N - windowSize - offset);
+    const endIdx = Math.min(N, startIdx + windowSize);
+    return chartData.slice(startIdx, endIdx);
+  }, [chartData, compZoomDays, compPanOffset]);
+
+  const interpolationSteps = useMemo(() => {
+    const days = slicedChartData.length;
+    if (days <= 15) return 12;
+    if (days <= 30) return 8;
+    if (days <= 60) return 4;
+    if (days <= 90) return 2;
+    return 1;
+  }, [slicedChartData]);
+
+  const interpolatedChartData = useMemo(() => {
+    const steps = interpolationSteps;
+    if (steps <= 1 || slicedChartData.length < 2) return slicedChartData;
+
+    const activeFundNames = selectedFunds
+      .filter(f => f && visibleFunds[f.schemeCode])
+      .map(f => f!.schemeName);
+
+    const result: any[] = [];
+    for (let i = 0; i < slicedChartData.length - 1; i++) {
+      const current = slicedChartData[i];
+      const next = slicedChartData[i + 1];
+
+      result.push(current);
+
+      for (let step = 1; step < steps; step++) {
+        const t = step / steps;
+        const interpolatedPoint: any = {
+          date: `${current.date}${"\u200B".repeat(step)}`,
+          isIntermediate: true
+        };
+
+        activeFundNames.forEach(name => {
+          const valCurr = current[name] ?? 0;
+          const valNext = next[name] ?? 0;
+          interpolatedPoint[name] = Number((valCurr + (valNext - valCurr) * t).toFixed(2));
+        });
+
+        result.push(interpolatedPoint);
+      }
+    }
+    result.push(slicedChartData[slicedChartData.length - 1]);
+    return result;
+  }, [slicedChartData, interpolationSteps, selectedFunds, visibleFunds]);
 
   const colors = ['#2563eb', '#10b981', '#f59e0b', '#7c3aed', '#db2777', '#0891b2', '#e11d48', '#65a30d'];
 
@@ -788,11 +750,20 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
+              <LineChart data={interpolatedChartData} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="date" stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 11 }} />
-                <YAxis stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 11 }} domain={['auto', 'auto']} tickFormatter={val => comparisonMetric === 'NAV' ? `${val}` : `${val}%`} />
-                <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1', borderRadius: '8px', fontSize: '12px' }} />
+                <XAxis
+                  dataKey="date"
+                  stroke="#94a3b8"
+                  tick={{ fill: '#64748b', fontSize: 11 }}
+                  tickFormatter={v => (typeof v === 'string' && v.includes('\u200B') ? '' : v)}
+                />
+                <YAxis stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 11 }} domain={['dataMin', 'dataMax']} tickFormatter={val => comparisonMetric === 'NAV' ? `${val}` : `${val}%`} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1', borderRadius: '8px', fontSize: '12px' }}
+                  cursor={{ stroke: '#cbd5e1', strokeWidth: 1.5, strokeDasharray: '4 4' }}
+                  labelFormatter={v => (typeof v === 'string' ? v.replace(/\u200B/g, '') : v)}
+                />
                 <Legend wrapperStyle={{ paddingTop: '12px', fontSize: '12px' }} />
                 {selectedFunds.map((fund, idx) => {
                   if (!fund || !visibleFunds[fund.schemeCode]) return null;
@@ -804,6 +775,8 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
                       stroke={colors[idx]}
                       strokeWidth={2}
                       dot={false}
+                      isAnimationActive={false}
+                      activeDot={{ r: 5 }}
                     />
                   );
                 })}
@@ -811,102 +784,56 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
             </ResponsiveContainer>
           )}
         </div>
+
+        {/* Custom Zoom & Pan Sliders */}
+        {chartData.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px', padding: '12px 18px', backgroundColor: '#f8fafc', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', fontFamily: 'var(--font-heading)', letterSpacing: '0.02em' }}>🔧 Comparative Chart Zoom & Scroll Controls</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Zoom in on short intervals to compare minor returns closely</span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+              {/* Zoom Slider */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 600 }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Zoom Window: {compZoomDays || chartData.length} Days</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{compZoomDays === chartData.length ? 'Show All' : 'Zoomed'}</span>
+                </div>
+                <input
+                  type="range"
+                  min="5"
+                  max={chartData.length}
+                  value={compZoomDays || chartData.length}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setCompZoomDays(val);
+                    setCompPanOffset(prev => Math.min(prev, chartData.length - val));
+                  }}
+                  style={{ width: '100%', accentColor: 'var(--color-primary)', cursor: 'pointer' }}
+                />
+              </div>
+
+              {/* Pan Slider */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 600 }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>Scroll / Pan Timeframe</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{compPanOffset === 0 ? 'Latest' : `${compPanOffset} Days Ago`}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max={chartData.length - (compZoomDays || chartData.length)}
+                  value={compPanOffset}
+                  onChange={(e) => setCompPanOffset(Number(e.target.value))}
+                  disabled={chartData.length === (compZoomDays || chartData.length)}
+                  style={{ width: '100%', accentColor: 'var(--color-primary)', cursor: 'pointer', opacity: chartData.length === (compZoomDays || chartData.length) ? 0.4 : 1 }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
-
-      {/* Asset Allocation Breakdown comparison section */}
-      {selectedFunds.some(f => f !== undefined) && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-
-          {/* Asset Allocation Breakdown Table */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <h3 className="card-title" style={{ margin: 0 }}>Asset Allocation Breakdown comparison</h3>
-            <div className="table-wrapper">
-              <table className="financial-table">
-                <thead>
-                  <tr>
-                    <th>Scheme Name</th>
-                    <th style={{ textAlign: 'right' }}>Cash & Net Assets</th>
-                    <th style={{ textAlign: 'right' }}>Certificate of Deposit (CD)</th>
-                    <th style={{ textAlign: 'right' }}>Commercial Paper (CP)</th>
-                    <th style={{ textAlign: 'right' }}>Government Securities</th>
-                    <th style={{ textAlign: 'right' }}>Treasury Bills</th>
-                    <th style={{ textAlign: 'right' }}>Corporate Debt</th>
-                    <th style={{ textAlign: 'right', fontWeight: 700 }}>Grand Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedFunds.map((fund, idx) => {
-                    if (!fund) return null;
-                    const portfolio = getPortfolioAllocation(fund.schemeCode, fund.schemeName);
-                    const alloc = portfolio.assetAllocation;
-                    const total = Math.round((alloc.cash + alloc.cd + alloc.cp + alloc.gsec + alloc.tbills + alloc.corpDebt) * 100) / 100;
-                    return (
-                      <tr key={fund.schemeCode}>
-                        <td style={{ fontWeight: 600 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: colors[idx] }}></span>
-                            <span>{fund.schemeName}</span>
-                          </div>
-                        </td>
-                        <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{alloc.cash.toFixed(2)}%</td>
-                        <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{alloc.cd.toFixed(2)}%</td>
-                        <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{alloc.cp.toFixed(2)}%</td>
-                        <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{alloc.gsec.toFixed(2)}%</td>
-                        <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{alloc.tbills.toFixed(2)}%</td>
-                        <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{alloc.corpDebt.toFixed(2)}%</td>
-                        <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{total.toFixed(2)}%</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Top Underlying Company Holdings Side-by-Side List */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <h3 className="card-title" style={{ margin: 0 }}>Top 5 Portfolio Holdings & Company Weightages</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
-              {[0, 1, 2].map(idx => {
-                const fund = selectedFunds[idx];
-                if (!fund) {
-                  return (
-                    <div key={idx} className="card-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '180px', borderStyle: 'dashed', borderColor: 'var(--border-medium)', background: '#f8fafc' }}>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Slot {idx + 1} is empty</span>
-                    </div>
-                  );
-                }
-
-                const portfolio = getPortfolioAllocation(fund.schemeCode, fund.schemeName);
-
-                return (
-                  <div key={fund.schemeCode} className="card-panel" style={{ borderLeft: `3px solid ${colors[idx]}`, padding: '16px 20px' }}>
-                    <div style={{ borderBottom: '1px solid var(--border-light)', paddingBottom: '8px', marginBottom: '12px' }}>
-                      <h4 style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fund.schemeName}</h4>
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Top Underlying Debt Instruments</span>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      {portfolio.topHoldings.map((hold, hidx) => (
-                        <div key={hidx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.78rem' }}>
-                          <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{hold.company}</span>
-                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{hold.instrument}</span>
-                          </div>
-                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--color-primary)', backgroundColor: 'var(--color-primary-light)', padding: '2px 6px', borderRadius: '4px' }}>
-                            {hold.weight.toFixed(2)}%
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-        </div>
-      )}
     </div>
   );
 };

@@ -12,7 +12,9 @@ import {
   Calendar,
   AlertCircle,
   Sliders,
-  Shuffle
+  Shuffle,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { PinnedFund } from './types/mf';
 import { fetchFundDetail, DEFAULT_SCHEME_CODES, searchSchemes, formatDateDisplay } from './services/amfiApi';
@@ -25,6 +27,7 @@ import { Page5DeveloperControls } from './components/Page5DeveloperControls';
 import { MFSearchResult } from './types/mf';
 
 const LOCAL_STORAGE_KEY = 'amfi_pinned_scheme_codes_v1';
+const HIDDEN_STORAGE_KEY = 'amfi_hidden_scheme_codes_v1';
 export const COLOR_PALETTE = ['#2563eb', '#059669', '#d97706', '#7c3aed', '#db2777', '#0891b2', '#e11d48', '#65a30d', '#9333ea'];
 
 export const App: React.FC = () => {
@@ -43,6 +46,21 @@ export const App: React.FC = () => {
       console.warn('Failed to parse localStorage pinned codes', e);
     }
     return defaultCodes;
+  });
+
+  // Hidden scheme codes - hidden funds are excluded from every page except the
+  // sidebar, where they still appear but blurred out.
+  const [hiddenSchemeCodes, setHiddenSchemeCodes] = useState<number[]>(() => {
+    try {
+      const stored = localStorage.getItem(HIDDEN_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {
+      console.warn('Failed to parse localStorage hidden codes', e);
+    }
+    return [];
   });
 
   const [pinnedFundsData, setPinnedFundsData] = useState<PinnedFund[]>([]);
@@ -107,6 +125,15 @@ export const App: React.FC = () => {
     }
   }, [pinnedSchemeCodes]);
 
+  // Sync hidden schemes to storage
+  useEffect(() => {
+    try {
+      localStorage.setItem(HIDDEN_STORAGE_KEY, JSON.stringify(hiddenSchemeCodes));
+    } catch (e) {
+      console.error('Failed to write hidden codes to localStorage', e);
+    }
+  }, [hiddenSchemeCodes]);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
@@ -141,11 +168,21 @@ export const App: React.FC = () => {
   const handleTogglePin = (schemeCode: number) => {
     if (pinnedSchemeCodes.includes(schemeCode)) {
       setPinnedSchemeCodes(prev => prev.filter(c => c !== schemeCode));
+      // Clean up hidden-state too, so it doesn't linger for a scheme that's no longer pinned
+      setHiddenSchemeCodes(prev => prev.filter(c => c !== schemeCode));
       showToast('Removed from pinned list.');
     } else {
       setPinnedSchemeCodes(prev => [...prev, schemeCode]);
       showToast('Added to pinned list.');
     }
+  };
+
+  const handleToggleHide = (schemeCode: number) => {
+    setHiddenSchemeCodes(prev => {
+      const isHidden = prev.includes(schemeCode);
+      showToast(isHidden ? 'Scheme unhidden.' : 'Scheme hidden from all pages.');
+      return isHidden ? prev.filter(c => c !== schemeCode) : [...prev, schemeCode];
+    });
   };
 
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -165,6 +202,13 @@ export const App: React.FC = () => {
     loadPinnedFunds(true);
     showToast('Refreshing live AMFI data...');
   };
+
+  // Funds excluded from every page (1-5) except the sidebar, where hidden
+  // funds still render but blurred.
+  const visiblePinnedFundsData = useMemo(
+    () => pinnedFundsData.filter(f => !hiddenSchemeCodes.includes(f.schemeCode)),
+    [pinnedFundsData, hiddenSchemeCodes]
+  );
 
   return (
     <div className="app-container">
@@ -241,17 +285,40 @@ export const App: React.FC = () => {
             {pinnedFundsData.length === 0 ? (
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>No funds pinned. Search above to pin.</span>
             ) : (
-              pinnedFundsData.map((fund, idx) => (
-                <div key={fund.schemeCode} className="pinned-chip">
-                  <div className="pinned-chip-info">
-                    <span className="pinned-chip-name">{fund.schemeName}</span>
-                    <span className="pinned-chip-nav">NAV: ₹{fund.latestNav.toFixed(2)}</span>
+              pinnedFundsData.map((fund, idx) => {
+                const isHidden = hiddenSchemeCodes.includes(fund.schemeCode);
+                return (
+                  <div key={fund.schemeCode} className="pinned-chip">
+                    <div
+                      className="pinned-chip-info"
+                      style={
+                        isHidden
+                          ? { filter: 'blur(4px)', userSelect: 'none', pointerEvents: 'none' }
+                          : undefined
+                      }
+                    >
+                      <span className="pinned-chip-name">{fund.schemeName}</span>
+                      <span className="pinned-chip-nav">NAV: ₹{fund.latestNav.toFixed(2)}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+                      <button
+                        onClick={() => handleToggleHide(fund.schemeCode)}
+                        className="pinned-chip-close"
+                        title={isHidden ? 'Unhide scheme (show everywhere)' : 'Hide scheme from all pages'}
+                      >
+                        {isHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                      <button
+                        onClick={() => handleTogglePin(fund.schemeCode)}
+                        className="pinned-chip-close"
+                        title="Unpin scheme"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
                   </div>
-                  <button onClick={() => handleTogglePin(fund.schemeCode)} className="pinned-chip-close">
-                    <X size={14} />
-                  </button>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -378,7 +445,7 @@ export const App: React.FC = () => {
         <main className="content-body">
           {activeTab === 1 && (
             <Page1FundExplorer
-              pinnedFunds={pinnedFundsData}
+              pinnedFunds={visiblePinnedFundsData}
               onTogglePin={handleTogglePin}
               isLoading={isLoading}
               colorPalette={COLOR_PALETTE}
@@ -388,7 +455,7 @@ export const App: React.FC = () => {
 
           {activeTab === 2 && (
             <Page2NAVComparisonGrid
-              pinnedFunds={pinnedFundsData}
+              pinnedFunds={visiblePinnedFundsData}
               isLoading={isLoading}
               pastDate={pastDateStr}
             />
@@ -396,14 +463,14 @@ export const App: React.FC = () => {
 
           {activeTab === 3 && (
             <Page3AMCIndividual
-              pinnedFunds={pinnedFundsData}
+              pinnedFunds={visiblePinnedFundsData}
               isLoading={isLoading}
             />
           )}
 
           {activeTab === 4 && (
             <Page4ConclusionRanking
-              pinnedFunds={pinnedFundsData}
+              pinnedFunds={visiblePinnedFundsData}
               isLoading={isLoading}
               pastDate={pastDateStr}
               apiKey={apiKey}
@@ -414,7 +481,7 @@ export const App: React.FC = () => {
 
           {activeTab === 5 && (
             <Page5Comparison
-              pinnedFunds={pinnedFundsData}
+              pinnedFunds={visiblePinnedFundsData}
               isLoading={isLoading}
               selectedFunds={compSelectedFunds}
               setSelectedFunds={setCompSelectedFunds}
