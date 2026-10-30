@@ -1,176 +1,40 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Sparkles, X, Search, RefreshCw, Eye, EyeOff, Calendar, Percent, TrendingUp, Plus } from 'lucide-react';
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  Legend,
-  CartesianGrid
-} from 'recharts';
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { PinnedFund, MFSearchResult } from '../types/mf';
-import { fetchFundDetail, searchSchemes, fetchAllSchemes, interpolateMissingData } from '../services/amfiApi';
+import { fetchFundDetail, searchSchemes, formatDateDisplay, formatDateShort } from '../services/amfiApi';
+import { endOfDay, parseISODate, periodReturn, shiftISODate, simulateSip, todayISO, returnBetween } from '../services/calc';
+import { fmtNav, fmtPct, fmtINR, pctClass, shortName } from '../services/format';
 
-// NOTE: Portfolio / asset-allocation / top-holdings data has been removed.
-// mfapi.in (https://api.mfapi.in) only exposes historical NAV + basic scheme
-// metadata — there is no free, reliable, real-time API for CD/CP/G-Sec
-// allocation weights or underlying company holdings for Indian mutual funds.
-// The previous implementation used a hardcoded lookup table plus a
-// seeded-random fallback generator, which produced fabricated numbers that
-// looked plausible but were not real. Rather than ship false data, that
-// section has been removed entirely. If a real data source (AMC factsheet
-// scrape, MFCentral, Value Research, a paid provider like FMP, etc.) is
-// wired up later, this section can be reintroduced against real data.
+// Portfolio / holdings data is intentionally not shown: mfapi.in only exposes
+// NAV history + scheme metadata, and fabricated holdings would be misleading.
+
+type Preset = '7D' | '15D' | '30D' | '90D' | '1Y' | '3Y' | 'ALL' | 'CUSTOM';
+type Metric = 'NAV' | '7D' | '15D' | '30D';
 
 interface Page5ComparisonProps {
   pinnedFunds: PinnedFund[];
   isLoading: boolean;
   selectedFunds: PinnedFund[];
   setSelectedFunds: React.Dispatch<React.SetStateAction<PinnedFund[]>>;
-  comparisonMetric: 'NAV' | '7D' | '15D' | '30D';
-  setComparisonMetric: React.Dispatch<React.SetStateAction<'NAV' | '7D' | '15D' | '30D'>>;
+  comparisonMetric: Metric;
+  setComparisonMetric: React.Dispatch<React.SetStateAction<Metric>>;
   visibleFunds: { [schemeCode: number]: boolean };
   setVisibleFunds: React.Dispatch<React.SetStateAction<{ [schemeCode: number]: boolean }>>;
-  datePreset: '7D' | '15D' | '30D' | '90D' | '1Y' | 'ALL' | 'CUSTOM';
-  setDatePreset: React.Dispatch<React.SetStateAction<'7D' | '15D' | '30D' | '90D' | '1Y' | 'ALL' | 'CUSTOM'>>;
+  datePreset: Preset;
+  setDatePreset: React.Dispatch<React.SetStateAction<Preset>>;
   startDate: string;
   setStartDate: (date: string) => void;
   endDate: string;
   setEndDate: (date: string) => void;
 }
 
-function calculateXIRR(cashFlows: { amount: number; date: Date }[]): number {
-  if (cashFlows.length < 2) return 0;
-
-  const maxIterations = 100;
-  const tolerance = 1e-6;
-
-  let guess = 0.1;
-  const d1 = cashFlows[0].date.getTime();
-
-  const xirrEquation = (r: number) => {
-    return cashFlows.reduce((sum, cf) => {
-      const timeDiff = (cf.date.getTime() - d1) / (365 * 24 * 60 * 60 * 1000);
-      return sum + cf.amount / Math.pow(1 + r, timeDiff);
-    }, 0);
-  };
-
-  const xirrDerivative = (r: number) => {
-    return cashFlows.reduce((sum, cf) => {
-      const timeDiff = (cf.date.getTime() - d1) / (365 * 24 * 60 * 60 * 1000);
-      if (timeDiff === 0) return sum;
-      return sum - (cf.amount * timeDiff) / Math.pow(1 + r, timeDiff + 1);
-    }, 0);
-  };
-
-  for (let i = 0; i < maxIterations; i++) {
-    const f = xirrEquation(guess);
-    const df = xirrDerivative(guess);
-
-    if (Math.abs(df) < 1e-12) break;
-
-    const nextGuess = guess - f / df;
-
-    if (Math.abs(nextGuess - guess) < tolerance) {
-      if (isNaN(nextGuess) || !isFinite(nextGuess)) break;
-      return nextGuess * 100;
-    }
-
-    guess = nextGuess;
-  }
-
-  let totalInvested = 0;
-  let finalValue = 0;
-  cashFlows.forEach(cf => {
-    if (cf.amount < 0) totalInvested += Math.abs(cf.amount);
-    else finalValue = cf.amount;
-  });
-
-  if (totalInvested > 0) {
-    const simpleReturn = ((finalValue - totalInvested) / totalInvested) * 100;
-    return simpleReturn;
-  }
-
-  return 0;
-}
-
-function computeSIPXIRR(historicalData: { date: string; nav: number; parsedDate: Date }[], startStr: string, endStr: string): number | null {
-  if (historicalData.length === 0) return null;
-
-  const startTime = new Date(startStr).getTime();
-  const endTime = new Date(endStr).getTime();
-
-  const inRange = historicalData
-    .filter(pt => {
-      const t = pt.parsedDate.getTime();
-      return t >= startTime && t <= endTime;
-    })
-    .sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
-
-  if (inRange.length < 10) return null;
-
-  const firstDate = inRange[0].parsedDate;
-  const lastDate = inRange[inRange.length - 1].parsedDate;
-
-  const sipInstallments: { amount: number; date: Date; nav: number }[] = [];
-  const currentDate = new Date(firstDate);
-
-  while (currentDate.getTime() <= lastDate.getTime()) {
-    const targetTime = currentDate.getTime();
-
-    let match = null;
-    for (let i = 0; i < inRange.length; i++) {
-      if (inRange[i].parsedDate.getTime() >= targetTime) {
-        match = inRange[i];
-        break;
-      }
-    }
-
-    if (match) {
-      sipInstallments.push({
-        amount: -10000,
-        date: match.parsedDate,
-        nav: match.nav
-      });
-    }
-
-    currentDate.setMonth(currentDate.getMonth() + 1);
-  }
-
-  if (sipInstallments.length < 2) return null;
-
-  let totalUnits = 0;
-  sipInstallments.forEach(inst => {
-    totalUnits += 10000 / inst.nav;
-  });
-
-  const latestNav = inRange[inRange.length - 1].nav;
-  const finalValue = totalUnits * latestNav;
-
-  const cashFlows = sipInstallments.map(inst => ({
-    amount: inst.amount,
-    date: inst.date
-  }));
-
-  cashFlows.push({
-    amount: finalValue,
-    date: lastDate
-  });
-
-  return calculateXIRR(cashFlows);
-}
-
-const calculateCAGR = (periodReturnPct: number, days: number): number => {
-  const periodReturn = periodReturnPct / 100;
-  const cagr = Math.pow(1 + periodReturn, 365 / days) - 1;
-  return Math.round(cagr * 100 * 100) / 100;
-};
+const COLORS = ['#2563eb', '#10b981', '#f59e0b', '#7c3aed', '#db2777', '#0891b2', '#e11d48', '#65a30d', '#9333ea', '#0d9488'];
+const SIP_AMOUNT = 10000;
+const key = (code: number) => `f${code}`;
 
 export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
   pinnedFunds,
-  isLoading,
   selectedFunds,
   setSelectedFunds,
   comparisonMetric,
@@ -184,418 +48,241 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
   endDate,
   setEndDate
 }) => {
-  const [slotCount, setSlotCount] = useState<number>(() => Math.max(3, selectedFunds.length || 3));
-  const [searchQueries, setSearchQueries] = useState<{ [slotIndex: number]: string }>({});
-  const [searchResults, setSearchResults] = useState<{ [slotIndex: number]: MFSearchResult[] }>({});
-  const [isSearching, setIsSearching] = useState<{ [slotIndex: number]: boolean }>({});
-  const [loadingSlot, setLoadingSlot] = useState<{ [slotIndex: number]: boolean }>({});
-  const [allAvailableSchemes, setAllAvailableSchemes] = useState<MFSearchResult[]>([]);
-
-  // Custom Zoom & Scroll states for the comparison chart
-  const [compZoomDays, setCompZoomDays] = useState<number>(0);
-  const [compPanOffset, setCompPanOffset] = useState<number>(0);
-
-  useEffect(() => {
-    fetchAllSchemes().then(schemes => setAllAvailableSchemes(schemes));
-  }, []);
+  const [slotCount, setSlotCount] = useState<number>(() => Math.max(3, selectedFunds.length));
+  const [searchQueries, setSearchQueries] = useState<Record<number, string>>({});
+  const [searchResults, setSearchResults] = useState<Record<number, MFSearchResult[]>>({});
+  const [isSearching, setIsSearching] = useState<Record<number, boolean>>({});
+  const [loadingSlot, setLoadingSlot] = useState<Record<number, boolean>>({});
+  const searchTimers = useRef<Record<number, number>>({});
 
   useEffect(() => {
     if (datePreset === 'CUSTOM') return;
-
-    const end = new Date();
-    const start = new Date();
-    let days = 90;
-
-    if (datePreset === '7D') days = 7;
-    else if (datePreset === '15D') days = 15;
-    else if (datePreset === '30D') days = 30;
-    else if (datePreset === '90D') days = 90;
-    else if (datePreset === '1Y') days = 365;
-    else if (datePreset === 'ALL') days = 3650;
-
-    start.setDate(end.getDate() - days);
-
-    setStartDate(start.toISOString().split('T')[0]);
-    setEndDate(end.toISOString().split('T')[0]);
+    const end = todayISO();
+    const days = { '7D': 7, '15D': 15, '30D': 30, '90D': 90, '1Y': 365, '3Y': 365 * 3, ALL: 365 * 60 }[datePreset];
+    setStartDate(shiftISODate(end, -days));
+    setEndDate(end);
   }, [datePreset, setStartDate, setEndDate]);
 
-  const handleSelectScheme = async (slotIndex: number, schemeCode: number) => {
-    setLoadingSlot(prev => ({ ...prev, [slotIndex]: true }));
-    try {
-      const details = await fetchFundDetail(schemeCode);
-      setSelectedFunds(prev => {
-        const next = [...prev];
-        next[slotIndex] = details;
-        return next;
-      });
-      setVisibleFunds(prev => ({ ...prev, [schemeCode]: true }));
-      setSearchQueries(prev => ({ ...prev, [slotIndex]: '' }));
-      setSearchResults(prev => ({ ...prev, [slotIndex]: [] }));
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingSlot(prev => ({ ...prev, [slotIndex]: false }));
-    }
-  };
+  const startT = parseISODate(startDate).getTime();
+  const endT = endOfDay(parseISODate(endDate));
+  const validRange = isFinite(startT) && isFinite(endT) && startT < endT;
 
-  const handleRemoveSlot = (slotIndex: number) => {
+  const handleSelectScheme = async (slot: number, schemeCode: number) => {
+    setLoadingSlot(p => ({ ...p, [slot]: true }));
+    const details = pinnedFunds.find(f => f.schemeCode === schemeCode) || (await fetchFundDetail(schemeCode));
+    setLoadingSlot(p => ({ ...p, [slot]: false }));
+    if (details.loadError) return;
     setSelectedFunds(prev => {
       const next = [...prev];
-      next.splice(slotIndex, 1);
+      next[slot] = details;
       return next;
     });
+    setVisibleFunds(p => ({ ...p, [schemeCode]: true }));
+    setSearchQueries(p => ({ ...p, [slot]: '' }));
+    setSearchResults(p => ({ ...p, [slot]: [] }));
   };
 
-  const handleSearchChange = async (slotIndex: number, query: string) => {
-    setSearchQueries(prev => ({ ...prev, [slotIndex]: query }));
-    if (query.trim().length >= 2) {
-      setIsSearching(prev => ({ ...prev, [slotIndex]: true }));
-      const results = await searchSchemes(query);
-      setSearchResults(prev => ({ ...prev, [slotIndex]: results }));
-      setIsSearching(prev => ({ ...prev, [slotIndex]: false }));
-    } else {
-      setSearchResults(prev => ({ ...prev, [slotIndex]: [] }));
-    }
+  const handleRemoveSlot = (slot: number) => {
+    setSelectedFunds(prev => prev.filter((_, i) => i !== slot));
   };
+
+  const handleSearchChange = (slot: number, query: string) => {
+    setSearchQueries(p => ({ ...p, [slot]: query }));
+    window.clearTimeout(searchTimers.current[slot]);
+    if (query.trim().length < 2) {
+      setSearchResults(p => ({ ...p, [slot]: [] }));
+      return;
+    }
+    setIsSearching(p => ({ ...p, [slot]: true }));
+    searchTimers.current[slot] = window.setTimeout(async () => {
+      const results = await searchSchemes(query);
+      setSearchResults(p => ({ ...p, [slot]: results }));
+      setIsSearching(p => ({ ...p, [slot]: false }));
+    }, 300);
+  };
+
+  const filled = selectedFunds.map((f, i) => ({ f, i })).filter(x => !!x.f);
+  const colorFor = (slot: number) => COLORS[slot % COLORS.length];
 
   const chartData = useMemo(() => {
-    const activeFunds = selectedFunds.filter(f => f && visibleFunds[f.schemeCode]);
-    if (activeFunds.length === 0) return [];
-
-    const dateMap = new Map<string, { date: string; parsedDate: Date;[key: string]: any }>();
-    const startTime = new Date(startDate).getTime();
-    const endTime = new Date(endDate).getTime();
-
-    activeFunds.forEach(fund => {
-      // Use the FULL history (sorted) as the lookback source. Trailing-return
-      // metrics (7D/15D/30D) for a date near the start of the visible range
-      // need NAV data from *before* that range to compute a real return —
-      // slicing to [startDate, endDate] first (as the old code did) meant
-      // there was nothing to look back to, so early points fell back to a
-      // same-point comparison and plotted as ~0%. The date range should only
-      // control which points get *drawn*, not which points are valid anchors.
-      const fullHistory = [...fund.historicalData].sort(
-        (a, b) => a.parsedDate.getTime() - b.parsedDate.getTime()
-      );
-
-      const inRangePoints = fullHistory.filter(pt => {
-        const t = pt.parsedDate.getTime();
-        return t >= startTime && t <= endTime;
+    if (!validRange) return [];
+    const active = selectedFunds.map((f, i) => ({ f, i })).filter(x => x.f && visibleFunds[x.f.schemeCode] !== false);
+    if (active.length === 0) return [];
+    const map = new Map<number, { t: number; [k: string]: number }>();
+    const days = comparisonMetric === '7D' ? 7 : comparisonMetric === '15D' ? 15 : 30;
+    active.forEach(({ f }) => {
+      const asc = f.historyAsc;
+      const pts = asc.filter(p => {
+        const t = p.parsedDate.getTime();
+        return t >= startT && t <= endT;
       });
-
-      if (inRangePoints.length === 0) return;
-      const baseNav = inRangePoints[0]?.nav || fund.latestNav;
-
-      inRangePoints.forEach(pt => {
-        const dateKey = pt.date;
-        if (!dateMap.has(dateKey)) {
-          dateMap.set(dateKey, {
-            date: dateKey,
-            parsedDate: pt.parsedDate
-          });
+      if (pts.length === 0) return;
+      const base = pts[0].nav;
+      pts.forEach(p => {
+        const t = p.parsedDate.getTime();
+        let v: number | null;
+        if (comparisonMetric === 'NAV') v = (p.nav / base) * 100;
+        else v = periodReturn(asc, endOfDay(p.parsedDate), days)?.annualised ?? null; // full history used for look-back
+        if (v === null) return;
+        let row = map.get(t);
+        if (!row) {
+          row = { t };
+          map.set(t, row);
         }
-        const row = dateMap.get(dateKey)!;
-
-        if (comparisonMetric === 'NAV') {
-          const rebasedVal = baseNav > 0 ? (pt.nav / baseNav) * 100 : 100;
-          row[fund.schemeName] = Math.round(rebasedVal * 100) / 100;
-        } else {
-          const days = comparisonMetric === '7D' ? 7 : comparisonMetric === '15D' ? 15 : 30;
-          const targetTime = pt.parsedDate.getTime();
-          const pastTime = targetTime - (days * 24 * 60 * 60 * 1000);
-
-          // Search the full history for the closest point at or before pastTime.
-          let pastPoint: { date: string; nav: number; parsedDate: Date } | null = null;
-          for (let j = fullHistory.length - 1; j >= 0; j--) {
-            if (fullHistory[j].parsedDate.getTime() <= pastTime) {
-              pastPoint = fullHistory[j];
-              break;
-            }
-          }
-
-          if (pastPoint) {
-            const currentNav = pt.nav;
-            const pastNav = pastPoint.nav;
-            const periodReturnPct = pastNav > 0 ? ((currentNav - pastNav) / pastNav) * 100 : 0;
-            row[fund.schemeName] = calculateCAGR(periodReturnPct, days);
-          }
-          // If there's genuinely no data far enough back (e.g. the scheme
-          // itself is younger than `days`), leave this fund's value unset
-          // for this date instead of plotting a false 0% — interpolateMissingData
-          // will bridge the gap from the nearest real values.
-        }
+        row[key(f.schemeCode)] = Math.round(v * 10000) / 10000;
       });
     });
+    return Array.from(map.values()).sort((a, b) => a.t - b.t);
+  }, [selectedFunds, visibleFunds, comparisonMetric, startT, endT, validRange]);
 
-    const sortedData = Array.from(dateMap.values()).sort(
-      (a, b) => a.parsedDate.getTime() - b.parsedDate.getTime()
-    );
-    return interpolateMissingData(sortedData, activeFunds.map(f => f.schemeName));
-  }, [selectedFunds, visibleFunds, comparisonMetric, startDate, endDate]);
+  const spanDays = chartData.length > 1 ? (chartData[chartData.length - 1].t - chartData[0].t) / 86400000 : 0;
+  const nameByKey = Object.fromEntries(filled.map(({ f }) => [key(f.schemeCode), f.schemeName]));
 
-  // Sync zoom and scroll ranges when chartData length changes
-  useEffect(() => {
-    setCompZoomDays(chartData.length);
-    setCompPanOffset(0);
-  }, [chartData.length]);
+  const slotIndices = Array.from({ length: Math.max(3, slotCount, selectedFunds.length) }, (_, i) => i);
 
-  const slicedChartData = useMemo(() => {
-    if (chartData.length === 0) return [];
-    const N = chartData.length;
-    const windowSize = compZoomDays > 0 ? Math.min(N, compZoomDays) : N;
-    const offset = Math.min(N - windowSize, compPanOffset);
-    const startIdx = Math.max(0, N - windowSize - offset);
-    const endIdx = Math.min(N, startIdx + windowSize);
-    return chartData.slice(startIdx, endIdx);
-  }, [chartData, compZoomDays, compPanOffset]);
-
-  const interpolationSteps = useMemo(() => {
-    const days = slicedChartData.length;
-    if (days <= 15) return 12;
-    if (days <= 30) return 8;
-    if (days <= 60) return 4;
-    if (days <= 90) return 2;
-    return 1;
-  }, [slicedChartData]);
-
-  const interpolatedChartData = useMemo(() => {
-    const steps = interpolationSteps;
-    if (steps <= 1 || slicedChartData.length < 2) return slicedChartData;
-
-    const activeFundNames = selectedFunds
-      .filter(f => f && visibleFunds[f.schemeCode])
-      .map(f => f!.schemeName);
-
-    const result: any[] = [];
-    for (let i = 0; i < slicedChartData.length - 1; i++) {
-      const current = slicedChartData[i];
-      const next = slicedChartData[i + 1];
-
-      result.push(current);
-
-      for (let step = 1; step < steps; step++) {
-        const t = step / steps;
-        const interpolatedPoint: any = {
-          date: `${current.date}${"\u200B".repeat(step)}`,
-          isIntermediate: true
-        };
-
-        activeFundNames.forEach(name => {
-          const valCurr = current[name] ?? 0;
-          const valNext = next[name] ?? 0;
-          interpolatedPoint[name] = Number((valCurr + (valNext - valCurr) * t).toFixed(2));
-        });
-
-        result.push(interpolatedPoint);
-      }
-    }
-    result.push(slicedChartData[slicedChartData.length - 1]);
-    return result;
-  }, [slicedChartData, interpolationSteps, selectedFunds, visibleFunds]);
-
-  const colors = ['#2563eb', '#10b981', '#f59e0b', '#7c3aed', '#db2777', '#0891b2', '#e11d48', '#65a30d'];
-
-  const slotIndices = useMemo(() => {
-    const totalSlots = Math.max(3, slotCount, selectedFunds.length);
-    return Array.from({ length: totalSlots }, (_, i) => i);
-  }, [slotCount, selectedFunds.length]);
+  const Row = ({ label, value, cls, strong }: { label: string; value: string; cls?: string; strong?: boolean }) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: '0.77rem' }}>
+      <span style={{ color: 'var(--text-muted)', fontWeight: strong ? 600 : 400 }}>{label}</span>
+      <span className={cls} style={{ fontWeight: 700, textAlign: 'right' }}>{value}</span>
+    </div>
+  );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {/* Welcome Banner */}
-      <div className="card-panel" style={{ borderLeft: '4px solid var(--color-primary)', background: 'linear-gradient(90deg, #eff6ff 0%, #ffffff 100%)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div className="card-panel page-hero" style={{ borderLeft: '4px solid var(--color-primary)', background: 'linear-gradient(90deg, #eff6ff 0%, #ffffff 100%)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-primary)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>
           <Sparkles size={12} />
           <span>Interactive Comparison</span>
         </div>
-        <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '4px', color: 'var(--text-primary)' }}>Mutual Fund Side-by-Side Comparison</h2>
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-          Add unlimited mutual fund comparison slots (3 visible at a time with side-scrolling). Displays annualized CAGR and dynamic SIP XIRR returns.
-        </p>
+        <h2>Mutual Fund Side-by-Side Comparison</h2>
+        <p>Add as many schemes as you like (swipe sideways on mobile). Returns, risk and a ₹{SIP_AMOUNT.toLocaleString('en-IN')}/month SIP are calculated for the selected date range.</p>
       </div>
 
-      {/* Comparison Grid (Horizontal Scroll, 3 slots visible at a time) */}
-      <div
-        style={{
-          display: 'flex',
-          gap: '16px',
-          overflowX: 'auto',
-          paddingBottom: '12px',
-          scrollSnapType: 'x mandatory'
-        }}
-      >
+      {/* Range selector first so the slot numbers make sense */}
+      <div className="card-panel" style={{ padding: '12px 16px', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Calendar size={15} className="text-slate-500" />
+          <span className="filter-label">Range</span>
+          <div className="segmented">
+            {(['7D', '15D', '30D', '90D', '1Y', '3Y', 'ALL', 'CUSTOM'] as const).map(p => (
+              <button key={p} className={datePreset === p ? 'active' : ''} onClick={() => setDatePreset(p)}>{p === 'CUSTOM' ? 'Custom' : p}</button>
+            ))}
+          </div>
+        </div>
+        {datePreset === 'CUSTOM' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <input type="date" value={startDate} max={endDate} onChange={e => setStartDate(e.target.value)} className="date-picker-input" aria-label="From date" />
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>to</span>
+            <input type="date" value={endDate} min={startDate} max={todayISO()} onChange={e => setEndDate(e.target.value)} className="date-picker-input" aria-label="To date" />
+          </div>
+        ) : (
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+            {datePreset === 'ALL' ? 'Full history' : `${formatDateDisplay(startDate)} → ${formatDateDisplay(endDate)}`}
+          </span>
+        )}
+      </div>
+
+      <div className="comp-slots">
         {slotIndices.map(idx => {
           const fund = selectedFunds[idx];
           const query = searchQueries[idx] || '';
           const results = searchResults[idx] || [];
-          const searching = isSearching[idx] || false;
-          const loading = loadingSlot[idx] || false;
-
-          const sipXirr = fund ? computeSIPXIRR(fund.historicalData, startDate, endDate) : null;
-          const slotColor = colors[idx % colors.length];
+          const slotColor = colorFor(idx);
+          const rangeRet = fund && validRange ? returnBetween(fund.historyAsc, startT, endT) : null;
+          const sip = fund && validRange ? simulateSip(fund.historyAsc, Math.max(startT, fund.historyAsc[0]?.parsedDate.getTime() || startT), endT, SIP_AMOUNT) : null;
 
           return (
-            <div
-              key={idx}
-              className="card-panel"
-              style={{
-                flex: '0 0 calc(33.333% - 11px)',
-                minWidth: '290px',
-                scrollSnapAlign: 'start',
-                position: 'relative',
-                minHeight: '350px',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between',
-                borderTop: fund ? `4px solid ${slotColor}` : '1px solid var(--border-light)'
-              }}
-            >
-              {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '12px' }}>
-                <span className="badge" style={{ backgroundColor: '#f1f5f9', color: 'var(--text-muted)', fontSize: '0.68rem', textTransform: 'uppercase' }}>
-                  Slot {idx + 1}
-                </span>
+            <div key={idx} className="card-panel comp-slot" style={{ borderTop: fund ? `4px solid ${slotColor}` : '1px solid var(--border-light)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <span className="badge badge-gray" style={{ fontSize: '0.66rem', textTransform: 'uppercase' }}>Slot {idx + 1}</span>
                 {fund && (
-                  <button onClick={() => handleRemoveSlot(idx)} className="btn btn-outline" style={{ padding: '4px', borderRadius: '50%', color: 'var(--text-muted)' }}>
+                  <button onClick={() => handleRemoveSlot(idx)} className="icon-btn" style={{ width: 30, height: 30 }} aria-label="Remove from comparison">
                     <X size={14} />
                   </button>
                 )}
               </div>
 
-              {loading ? (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, color: 'var(--text-muted)' }}>
+              {loadingSlot[idx] ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, color: 'var(--text-muted)', minHeight: 200 }}>
                   <RefreshCw size={24} className="animate-spin" />
-                  <span style={{ fontSize: '0.75rem', marginTop: '8px' }}>Loading Scheme details...</span>
+                  <span style={{ fontSize: '0.75rem', marginTop: '8px' }}>Loading scheme…</span>
                 </div>
               ) : fund ? (
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   <div>
-                    <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)', lineHeight: '1.3' }} title={fund.schemeName}>
-                      {fund.schemeName}
-                    </h3>
-                    <span className="font-mono" style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Code: {fund.schemeCode}</span>
+                    <h3 style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.3 }}>{fund.schemeName}</h3>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>{fund.category}</div>
                   </div>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--border-light)', paddingTop: '10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
-                      <span style={{ color: 'var(--text-muted)' }}>ISIN:</span>
-                      <span className="font-mono" style={{ fontWeight: 600 }}>{fund.isin}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
-                      <span style={{ color: 'var(--text-muted)' }}>Latest NAV:</span>
-                      <span style={{ fontWeight: 700, color: 'var(--color-success)' }}>₹{fund.latestNav.toFixed(4)}</span>
-                    </div>
-
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', borderTop: '1px dashed var(--border-light)', paddingTop: '6px', marginTop: '4px' }}>
-                      <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>7D Annualized (CAGR):</span>
-                      <span style={{ fontWeight: 700, color: fund.return7d >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                        {fund.return7d >= 0 ? '+' : ''}{calculateCAGR(fund.return7d, 7).toFixed(2)}%
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid var(--border-light)', paddingTop: 10 }}>
+                    <Row label="ISIN" value={fund.isin} />
+                    <Row label={`NAV (${fund.navAsOf})`} value={fmtNav(fund.latestNav)} />
+                    <Row label="7D (ann.)" value={fmtPct(fund.return7dAnn)} cls={pctClass(fund.return7dAnn)} />
+                    <Row label="15D (ann.)" value={fmtPct(fund.return15dAnn)} cls={pctClass(fund.return15dAnn)} />
+                    <Row label="30D (ann.)" value={fmtPct(fund.return30dAnn)} cls={pctClass(fund.return30dAnn)} />
+                    <Row label="1Y" value={fmtPct(fund.return1y)} cls={pctClass(fund.return1y)} />
+                    <Row label="3Y CAGR" value={fmtPct(fund.return3y)} cls={pctClass(fund.return3y)} />
+                    <Row label="5Y CAGR" value={fmtPct(fund.return5y)} cls={pctClass(fund.return5y)} />
+                    <Row label="Volatility 1Y" value={fmtPct(fund.volatility1y, 2, false)} />
+                    <Row label="Max drawdown 1Y" value={fmtPct(fund.maxDrawdown1y, 2, false)} cls={fund.maxDrawdown1y ? 'val-negative' : ''} />
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, backgroundColor: 'var(--color-primary-light)', padding: '8px 10px', borderRadius: 8 }}>
+                    <Row label={rangeRet && rangeRet.days >= 365 ? 'Range return (CAGR)' : 'Range return'} value={rangeRet ? `${fmtPct(rangeRet.absolute)}${rangeRet.days >= 365 ? ` (${fmtPct(rangeRet.annualised)})` : ''}` : '—'} cls={pctClass(rangeRet?.absolute)} strong />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.77rem' }}>
+                      <span style={{ color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <Percent size={12} /> SIP XIRR
                       </span>
+                      <span className={pctClass(sip?.xirr)} style={{ fontWeight: 800 }}>{fmtPct(sip?.xirr)}</span>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
-                      <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>15D Annualized (CAGR):</span>
-                      <span style={{ fontWeight: 700, color: fund.return15d >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                        {fund.return15d >= 0 ? '+' : ''}{calculateCAGR(fund.return15d, 15).toFixed(2)}%
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
-                      <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>30D Annualized (CAGR):</span>
-                      <span style={{ fontWeight: 700, color: fund.return30d >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                        {fund.return30d >= 0 ? '+' : ''}{calculateCAGR(fund.return30d, 30).toFixed(2)}%
-                      </span>
-                    </div>
-
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', borderTop: '1px solid var(--border-light)', paddingTop: '6px', marginTop: '4px', backgroundColor: 'var(--color-primary-light)', padding: '6px 8px', borderRadius: '4px' }}>
-                      <span style={{ color: 'var(--color-primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <Percent size={12} /> SIP XIRR (Range):
-                      </span>
-                      <span style={{ fontWeight: 800, color: 'var(--color-primary)' }}>
-                        {sipXirr !== null ? `${sipXirr >= 0 ? '+' : ''}${sipXirr.toFixed(2)}%` : '—'}
-                      </span>
-                    </div>
+                    {sip && (
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
+                        {sip.installments} × ₹{SIP_AMOUNT.toLocaleString('en-IN')} = {fmtINR(sip.invested)} → <strong>{fmtINR(sip.currentValue)}</strong>
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                   <div className="relative">
                     <Search size={14} className="search-icon-left" style={{ left: '10px' }} />
                     <input
-                      type="text"
-                      placeholder="Search to compare schemes..."
+                      type="search"
+                      placeholder="Search a scheme to compare…"
                       value={query}
                       onChange={e => handleSearchChange(idx, e.target.value)}
                       className="input-text"
-                      style={{ width: '100%', padding: '8px 10px 8px 32px', fontSize: '0.78rem', background: '#ffffff', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}
+                      style={{ width: '100%', padding: '9px 10px 9px 32px', fontSize: '0.8rem' }}
                     />
+                    {query.trim().length >= 2 && (
+                      <div className="search-dropdown" style={{ maxHeight: 220 }}>
+                        {isSearching[idx] && results.length === 0 ? (
+                          <div className="search-empty">Searching…</div>
+                        ) : results.length === 0 ? (
+                          <div className="search-empty">No schemes found</div>
+                        ) : (
+                          results.map(item => (
+                            <button
+                              key={item.schemeCode}
+                              onClick={() => handleSelectScheme(idx, item.schemeCode)}
+                              className="search-result-row"
+                              style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer' }}
+                            >
+                              <span className="search-result-name">{item.schemeName}</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
                   </div>
-
-                  {query.trim().length >= 2 && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        top: '100%',
-                        left: 0,
-                        right: 0,
-                        backgroundColor: '#ffffff',
-                        border: '1px solid var(--border-light)',
-                        borderRadius: 'var(--radius-md)',
-                        boxShadow: 'var(--shadow-lg)',
-                        maxHeight: '180px',
-                        overflowY: 'auto',
-                        zIndex: 100,
-                        padding: '6px',
-                        marginTop: '4px'
-                      }}
-                    >
-                      {searching ? (
-                        <div style={{ padding: '8px', fontSize: '0.75rem', textAlign: 'center', color: 'var(--text-muted)' }}>Searching...</div>
-                      ) : results.length === 0 ? (
-                        <div style={{ padding: '8px', fontSize: '0.75rem', textAlign: 'center', color: 'var(--text-muted)' }}>No schemes found</div>
-                      ) : (
-                        results.map(item => (
-                          <button
-                            key={item.schemeCode}
-                            onClick={() => handleSelectScheme(idx, item.schemeCode)}
-                            style={{
-                              width: '100%',
-                              textAlign: 'left',
-                              padding: '6px 8px',
-                              background: 'none',
-                              border: 'none',
-                              borderBottom: '1px solid #f8fafc',
-                              fontSize: '0.72rem',
-                              fontWeight: 600,
-                              cursor: 'pointer',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                              color: 'var(--text-primary)'
-                            }}
-                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#f1f5f9'}
-                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                          >
-                            {item.schemeName}
+                  <div style={{ marginTop: 14, textAlign: 'center' }}>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>or pick a pinned scheme:</span>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', marginTop: 8, maxHeight: 160, overflowY: 'auto' }}>
+                      {pinnedFunds
+                        .filter(f => !selectedFunds.some(sf => sf && sf.schemeCode === f.schemeCode))
+                        .map(f => (
+                          <button key={f.schemeCode} onClick={() => handleSelectScheme(idx, f.schemeCode)} className="badge badge-gray" style={{ cursor: 'pointer', padding: '5px 9px' }} title={f.schemeName}>
+                            {shortName(f.schemeName, 30)}
                           </button>
-                        ))
-                      )}
-                    </div>
-                  )}
-
-                  <div style={{ marginTop: '12px', textAlign: 'center' }}>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>or choose from pinned schemes ({pinnedFunds.length}):</span>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', marginTop: '8px', maxHeight: '120px', overflowY: 'auto' }}>
-                      {pinnedFunds.filter(f => !selectedFunds.some(sf => sf && sf.schemeCode === f.schemeCode)).map(f => (
-                        <button
-                          key={f.schemeCode}
-                          onClick={() => handleSelectScheme(idx, f.schemeCode)}
-                          className="badge"
-                          style={{ border: '1px solid var(--border-light)', cursor: 'pointer', background: '#f8fafc', color: 'var(--text-secondary)' }}
-                          onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--color-primary-light)'}
-                          onMouseLeave={e => e.currentTarget.style.backgroundColor = '#f8fafc'}
-                        >
-                          {f.schemeName.split('-')[0].trim()}
-                        </button>
-                      ))}
+                        ))}
                     </div>
                   </div>
                 </div>
@@ -604,235 +291,87 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
           );
         })}
 
-        {/* Add Slot Button Card */}
-        <div
-          className="card-panel"
-          style={{
-            flex: '0 0 calc(33.333% - 11px)',
-            minWidth: '220px',
-            minHeight: '350px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            border: '2px dashed var(--border-medium)',
-            backgroundColor: '#f8fafc',
-            scrollSnapAlign: 'start'
-          }}
+        <button
+          className="card-panel comp-slot"
+          style={{ alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: '2px dashed var(--border-medium)', backgroundColor: '#f8fafc', minWidth: 200 }}
           onClick={() => setSlotCount(prev => Math.max(prev + 1, selectedFunds.length + 1))}
         >
-          <Plus size={36} style={{ color: 'var(--color-primary)' }} />
-          <span style={{ fontWeight: 700, fontSize: '0.85rem', marginTop: '8px', color: 'var(--color-primary)' }}>
-            + Add Comparison Slot
-          </span>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            (Side-scroll to view all slots)
-          </span>
-        </div>
+          <Plus size={32} style={{ color: 'var(--color-primary)' }} />
+          <span style={{ fontWeight: 700, fontSize: '0.85rem', marginTop: 8, color: 'var(--color-primary)' }}>Add comparison slot</span>
+        </button>
       </div>
 
-      {/* Chart controls & Visualization */}
       <div className="card-panel">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
           <div>
-            <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><TrendingUp size={18} style={{ color: 'var(--color-primary)' }} /> Comparative Visualization Chart</h3>
-            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Switch metric parameters to show NAV indices or annualized rolling return CAGR percentages</p>
+            <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <TrendingUp size={18} style={{ color: 'var(--color-primary)' }} /> Comparison Chart
+            </h3>
+            <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+              {comparisonMetric === 'NAV' ? 'NAV rebased to 100 at the start of the range.' : `Rolling ${comparisonMetric} return on each date, simple annualised (% p.a.).`}
+            </p>
           </div>
-
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-            {/* Metric Selector */}
-            <div style={{ display: 'flex', backgroundColor: '#e2e8f0', padding: '3px', borderRadius: 'var(--radius-sm)' }}>
-              {(['NAV', '7D', '15D', '30D'] as const).map(param => (
-                <button
-                  key={param}
-                  onClick={() => setComparisonMetric(param)}
-                  className="btn"
-                  style={{
-                    padding: '4px 10px',
-                    fontSize: '0.72rem',
-                    backgroundColor: comparisonMetric === param ? '#ffffff' : 'transparent',
-                    color: 'var(--text-primary)',
-                    boxShadow: comparisonMetric === param ? 'var(--shadow-sm)' : 'none'
-                  }}
-                >
-                  {param === 'NAV' ? 'NAV (Rebased 100)' : `${param} Annualized Return (CAGR)`}
-                </button>
-              ))}
-            </div>
-
-            {/* Presets Selector */}
-            <div style={{ display: 'flex', backgroundColor: '#e2e8f0', padding: '3px', borderRadius: 'var(--radius-sm)' }}>
-              {(['7D', '15D', '30D', '90D', '1Y', 'ALL', 'CUSTOM'] as const).map(preset => (
-                <button
-                  key={preset}
-                  onClick={() => setDatePreset(preset)}
-                  className="btn"
-                  style={{
-                    padding: '4px 8px',
-                    fontSize: '0.72rem',
-                    backgroundColor: datePreset === preset ? '#ffffff' : 'transparent',
-                    color: 'var(--text-primary)',
-                    boxShadow: datePreset === preset ? 'var(--shadow-sm)' : 'none'
-                  }}
-                >
-                  {preset}
-                </button>
-              ))}
-            </div>
+          <div className="segmented">
+            {(['NAV', '7D', '15D', '30D'] as const).map(m => (
+              <button key={m} className={comparisonMetric === m ? 'active' : ''} onClick={() => setComparisonMetric(m)}>{m === 'NAV' ? 'Growth of 100' : `${m} rolling`}</button>
+            ))}
           </div>
         </div>
 
-        {/* Custom Date Picker Inputs (shown if preset is CUSTOM) */}
-        {datePreset === 'CUSTOM' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', padding: '12px', backgroundColor: '#f1f5f9', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-light)', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Calendar size={14} className="text-slate-500" />
-              <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)' }}>From Date:</label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={e => setStartDate(e.target.value)}
-                className="date-picker-input"
-                style={{ padding: '4px 8px', fontSize: '0.72rem' }}
-              />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Calendar size={14} className="text-slate-500" />
-              <label style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)' }}>To Date:</label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={e => setEndDate(e.target.value)}
-                className="date-picker-input"
-                style={{ padding: '4px 8px', fontSize: '0.72rem' }}
-              />
-            </div>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>(Set custom date ranges for dynamic monthly SIP calculations)</span>
-          </div>
-        )}
-
-        {/* Legend / Visibility selection toggles */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '16px', padding: '8px 12px', backgroundColor: '#f8fafc', borderRadius: 'var(--radius-sm)' }}>
-          {selectedFunds.map((fund, idx) => {
-            if (!fund) return null;
-            const isVisible = visibleFunds[fund.schemeCode] !== false;
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 14px', marginBottom: 12, padding: '8px 10px', backgroundColor: '#f8fafc', borderRadius: 8 }}>
+          {filled.length === 0 && <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Add schemes above to compare.</span>}
+          {filled.map(({ f, i }) => {
+            const vis = visibleFunds[f.schemeCode] !== false;
             return (
               <button
-                key={fund.schemeCode}
-                onClick={() => setVisibleFunds(prev => ({ ...prev, [fund.schemeCode]: !isVisible }))}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  border: 'none',
-                  background: 'none',
-                  cursor: 'pointer',
-                  fontSize: '0.75rem',
-                  fontWeight: 600,
-                  color: isVisible ? 'var(--text-primary)' : 'var(--text-muted)'
-                }}
+                key={f.schemeCode}
+                onClick={() => setVisibleFunds(p => ({ ...p, [f.schemeCode]: !vis }))}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', background: 'none', cursor: 'pointer', fontSize: '0.74rem', fontWeight: 600, color: vis ? 'var(--text-primary)' : 'var(--text-muted)', textDecoration: vis ? 'none' : 'line-through' }}
+                title={f.schemeName}
               >
-                <div style={{ width: '12px', height: '12px', borderRadius: '3px', backgroundColor: colors[idx], opacity: isVisible ? 1 : 0.2, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {isVisible ? <Eye size={8} style={{ color: '#ffffff' }} /> : <EyeOff size={8} style={{ color: '#ffffff' }} />}
-                </div>
-                <span>{fund.schemeName}</span>
+                <span style={{ width: 14, height: 14, borderRadius: 3, backgroundColor: colorFor(i), opacity: vis ? 1 : 0.25, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {vis ? <Eye size={9} color="#fff" /> : <EyeOff size={9} color="#fff" />}
+                </span>
+                {shortName(f.schemeName, 36)}
               </button>
             );
           })}
         </div>
 
-        {/* The Recharts LineChart */}
-        <div style={{ height: '320px', width: '100%' }}>
+        <div className="chart-box">
           {chartData.length === 0 ? (
-            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-              Add schemes and ensure at least one is visible to display comparative trajectories.
+            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center' }}>
+              {validRange ? 'Add schemes and keep at least one visible to see the chart.' : 'Choose a valid date range.'}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={interpolatedChartData} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
+              <LineChart data={chartData} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis
-                  dataKey="date"
+                  dataKey="t"
                   stroke="#94a3b8"
-                  tick={{ fill: '#64748b', fontSize: 11 }}
-                  tickFormatter={v => (typeof v === 'string' && v.includes('\u200B') ? '' : v)}
+                  tick={{ fill: '#64748b', fontSize: 10 }}
+                  minTickGap={28}
+                  tickFormatter={t => {
+                    const d = new Date(t);
+                    return spanDays > 400 ? `${formatDateShort(d).slice(3)} ${String(d.getFullYear()).slice(2)}` : formatDateShort(d);
+                  }}
                 />
-                <YAxis stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 11 }} domain={['dataMin', 'dataMax']} tickFormatter={val => comparisonMetric === 'NAV' ? `${val}` : `${val}%`} />
+                <YAxis stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} domain={['auto', 'auto']} width={46} tickFormatter={v => (comparisonMetric === 'NAV' ? Number(v).toFixed(0) : `${Number(v).toFixed(1)}%`)} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1', borderRadius: '8px', fontSize: '12px' }}
-                  cursor={{ stroke: '#cbd5e1', strokeWidth: 1.5, strokeDasharray: '4 4' }}
-                  labelFormatter={v => (typeof v === 'string' ? v.replace(/\u200B/g, '') : v)}
+                  contentStyle={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1', borderRadius: '8px', fontSize: '12px', maxWidth: 320, whiteSpace: 'normal' }}
+                  labelFormatter={t => formatDateDisplay(new Date(t as number))}
+                  formatter={(v: any, k: any) => [comparisonMetric === 'NAV' ? `${Number(v).toFixed(2)} (${fmtPct(Number(v) - 100)})` : `${Number(v).toFixed(2)}%`, shortName(nameByKey[k] || String(k), 40)]}
                 />
-                <Legend wrapperStyle={{ paddingTop: '12px', fontSize: '12px' }} />
-                {selectedFunds.map((fund, idx) => {
-                  if (!fund || !visibleFunds[fund.schemeCode]) return null;
-                  return (
-                    <Line
-                      key={fund.schemeCode}
-                      type="monotone"
-                      dataKey={fund.schemeName}
-                      stroke={colors[idx]}
-                      strokeWidth={2}
-                      dot={false}
-                      isAnimationActive={false}
-                      activeDot={{ r: 5 }}
-                    />
-                  );
-                })}
+                {filled.map(({ f, i }) =>
+                  visibleFunds[f.schemeCode] === false ? null : (
+                    <Line key={f.schemeCode} type="monotone" dataKey={key(f.schemeCode)} stroke={colorFor(i)} strokeWidth={2} dot={false} isAnimationActive={false} activeDot={{ r: 4 }} connectNulls />
+                  )
+                )}
               </LineChart>
             </ResponsiveContainer>
           )}
         </div>
-
-        {/* Custom Zoom & Pan Sliders */}
-        {chartData.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px', padding: '12px 18px', backgroundColor: '#f8fafc', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', fontFamily: 'var(--font-heading)', letterSpacing: '0.02em' }}>🔧 Comparative Chart Zoom & Scroll Controls</span>
-              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Zoom in on short intervals to compare minor returns closely</span>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
-              {/* Zoom Slider */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 600 }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Zoom Window: {compZoomDays || chartData.length} Days</span>
-                  <span style={{ color: 'var(--text-muted)' }}>{compZoomDays === chartData.length ? 'Show All' : 'Zoomed'}</span>
-                </div>
-                <input
-                  type="range"
-                  min="5"
-                  max={chartData.length}
-                  value={compZoomDays || chartData.length}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setCompZoomDays(val);
-                    setCompPanOffset(prev => Math.min(prev, chartData.length - val));
-                  }}
-                  style={{ width: '100%', accentColor: 'var(--color-primary)', cursor: 'pointer' }}
-                />
-              </div>
-
-              {/* Pan Slider */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 600 }}>
-                  <span style={{ color: 'var(--text-secondary)' }}>Scroll / Pan Timeframe</span>
-                  <span style={{ color: 'var(--text-muted)' }}>{compPanOffset === 0 ? 'Latest' : `${compPanOffset} Days Ago`}</span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max={chartData.length - (compZoomDays || chartData.length)}
-                  value={compPanOffset}
-                  onChange={(e) => setCompPanOffset(Number(e.target.value))}
-                  disabled={chartData.length === (compZoomDays || chartData.length)}
-                  style={{ width: '100%', accentColor: 'var(--color-primary)', cursor: 'pointer', opacity: chartData.length === (compZoomDays || chartData.length) ? 0.4 : 1 }}
-                />
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

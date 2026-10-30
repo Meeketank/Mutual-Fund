@@ -5,7 +5,7 @@ export interface MFSearchResult {
 
 export interface MFHistoricalDataPoint {
   date: string; // DD-MM-YYYY
-  nav: string;  // e.g. "105.4321"
+  nav: string; // e.g. "105.4321"
 }
 
 export interface MFMetaData {
@@ -24,32 +24,63 @@ export interface MFDetailResponse {
   status: string;
 }
 
+export interface NavHistoryPoint {
+  date: string; // DD-MM-YYYY
+  nav: number;
+  parsedDate: Date;
+}
+
 export interface PinnedFund {
   schemeCode: number;
   schemeName: string;
   isin: string;
   amc: string;
+  /** Official AMFI category, e.g. "Debt Scheme - Liquid Fund". */
+  category: string;
+  /** e.g. "Open Ended Schemes". */
+  schemeType: string;
+  /** Date of the first NAV available in the AMFI history. */
   launchDate: string;
   latestNav: number;
   navAsOf: string;
-  historicalData: {
-    date: string;
-    nav: number;
-    parsedDate: Date;
-  }[];
-  // Calculated Rolling Returns (from real NAV history)
-  return7d: number;
-  return15d: number;
-  return30d: number;
-  return7dAnn: number;
-  return15dAnn: number;
-  return30dAnn: number;
+  latestNavDate: Date | null;
+  /** Previous published NAV and the 1-day change. */
+  prevNav: number | null;
+  dayChange: number | null;
+  dayChangePct: number | null;
+  /** True when the latest NAV is more than 5 days old. */
+  isStale: boolean;
+  /** Newest first. */
+  historicalData: NavHistoryPoint[];
+  /** Oldest first (same points). */
+  historyAsc: NavHistoryPoint[];
+
+  // Point-to-point returns ending on the latest NAV. Null = not enough history.
+  return7d: number | null;
+  return15d: number | null;
+  return30d: number | null;
+  return7dAnn: number | null;
+  return15dAnn: number | null;
+  return30dAnn: number | null;
+  return3m: number | null;
+  return6m: number | null;
+  return1y: number | null; // absolute = CAGR for exactly 1y
+  return3y: number | null; // CAGR
+  return5y: number | null; // CAGR
+  returnSinceStart: number | null; // CAGR since first available NAV
+  volatility1y: number | null;
+  maxDrawdown1y: number | null;
+
+  /** Set when the scheme failed to load. Such funds are only shown in the sidebar. */
+  loadError?: string;
 }
 
 export interface GranularNAVRow {
   id: string;
   fundName: string;
   date: string;
+  iso: string;
+  isCarried: boolean;
   nav: number;
   openingNav: number;
   closingNav: number;
@@ -61,17 +92,4 @@ export interface GranularNAVRow {
   rollingReturn7dAnn: number | null;
   rollingReturn15dAnn: number | null;
   rollingReturn30dAnn: number | null;
-}
-
-export interface RankingRow {
-  schemeCode: number;
-  fundName: string;
-  isin: string;
-  amc: string;
-  latestNav: number;
-  navAsOf: string;
-  return30d: number;
-  returnRank: number;
-  overallScore: number;
-  overallRank: number;
 }

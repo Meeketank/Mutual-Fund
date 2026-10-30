@@ -1,32 +1,10 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import {
-  Pin,
-  Trash2,
-  TrendingUp,
-  Search,
-  Sparkles,
-  PieChart,
-  Activity,
-  Layers,
-  Filter,
-  ArrowUpRight,
-  ZoomOut,
-  AlertTriangle,
-  Crosshair
-} from 'lucide-react';
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  Legend,
-  CartesianGrid,
-  ReferenceArea
-} from 'recharts';
+import { Sparkles, Layers, Filter, ZoomOut, AlertTriangle, Crosshair, ArrowUp, ArrowDown, Download } from 'lucide-react';
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea } from 'recharts';
 import { PinnedFund } from '../types/mf';
-import { getNavOnDate, formatDateDisplay } from '../services/amfiApi';
+import { getNavOnDate, formatDateDisplay, formatDateShort } from '../services/amfiApi';
+import { DAY_MS, todayISO, absoluteReturnPct } from '../services/calc';
+import { fmtNav, fmtPct, pctClass, shortName, downloadCSV } from '../services/format';
 
 interface Page1Props {
   pinnedFunds: PinnedFund[];
@@ -37,241 +15,198 @@ interface Page1Props {
 }
 
 interface HoveredPoint {
-  date: string;
+  label: string;
   items: { name: string; value: number; color: string }[];
 }
 
-export const Page1FundExplorer: React.FC<Page1Props> = ({
-  pinnedFunds,
-  onTogglePin,
-  isLoading,
-  colorPalette,
-  pastDate
-}) => {
+type SortKey = 'name' | 'nav' | 'day' | 'diff' | 'r7' | 'r30' | 'r1y' | 'r3y';
+
+const key = (code: number) => `f${code}`;
+
+export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onTogglePin, isLoading, colorPalette, pastDate }) => {
   const [tableFilter, setTableFilter] = useState('');
-  const [timeframe, setTimeframe] = useState<'1M' | '3M' | '6M' | '1Y' | 'ALL'>('3M');
+  const [timeframe, setTimeframe] = useState<'1M' | '3M' | '6M' | '1Y' | '3Y' | 'ALL'>('3M');
   const [chartMode, setChartMode] = useState<'rebased' | 'absolute'>('rebased');
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
 
-  // --- Zoom state (shared by both the drag-select and the slider) ---
-  const [refAreaLeft, setRefAreaLeft] = useState<string | null>(null);
-  const [refAreaRight, setRefAreaRight] = useState<string | null>(null);
+  const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
+  const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
   const [sliderRange, setSliderRange] = useState<[number, number] | null>(null);
-
-  // --- Hover state, rendered as a fixed panel BELOW the chart instead of a
-  // floating box that covers the lines (this replaces the default Tooltip).
   const [hoveredPoint, setHoveredPoint] = useState<HoveredPoint | null>(null);
 
-  const isPastDateSelected = useMemo(() => {
-    const todayStr = new Date().toISOString().split('T')[0];
-    return pastDate !== todayStr;
-  }, [pastDate]);
+  const isPastDateSelected = pastDate !== todayISO();
+  const colorOf = useCallback(
+    (code: number) => colorPalette[Math.max(0, pinnedFunds.findIndex(f => f.schemeCode === code)) % colorPalette.length],
+    [pinnedFunds, colorPalette]
+  );
 
-  const filteredFunds = useMemo(() => {
+  const rows = useMemo(() => {
     const q = tableFilter.toLowerCase().trim();
-    if (!q) return pinnedFunds;
-    return pinnedFunds.filter(
-      f =>
-        f.schemeName.toLowerCase().includes(q) ||
-        f.amc.toLowerCase().includes(q) ||
-        f.isin.toLowerCase().includes(q)
-    );
-  }, [pinnedFunds, tableFilter]);
+    const list = pinnedFunds
+      .filter(f => !q || [f.schemeName, f.amc, f.isin, f.category, String(f.schemeCode)].some(v => v.toLowerCase().includes(q)))
+      .map(fund => {
+        const past = getNavOnDate(fund, pastDate);
+        const diff = past ? absoluteReturnPct(past.nav, fund.latestNav) : null;
+        return { fund, past, diff };
+      });
+    if (!sort) return list;
+    const val = (r: (typeof list)[number]): number | string | null => {
+      switch (sort.key) {
+        case 'name': return r.fund.schemeName;
+        case 'nav': return r.fund.latestNav;
+        case 'day': return r.fund.dayChangePct;
+        case 'diff': return r.diff;
+        case 'r7': return r.fund.return7d;
+        case 'r30': return r.fund.return30d;
+        case 'r1y': return r.fund.return1y;
+        case 'r3y': return r.fund.return3y;
+      }
+    };
+    return [...list].sort((a, b) => {
+      const va = val(a);
+      const vb = val(b);
+      if (va === null) return 1;
+      if (vb === null) return -1;
+      if (typeof va === 'string') return va.localeCompare(vb as string) * sort.dir;
+      return ((va as number) - (vb as number)) * sort.dir;
+    });
+  }, [pinnedFunds, tableFilter, pastDate, sort]);
 
-  const dataQuality = useMemo(() => {
-    const missing = pinnedFunds.filter(f => !f.historicalData || f.historicalData.length === 0);
-    const sparse = pinnedFunds.filter(
-      f => f.historicalData && f.historicalData.length > 0 && f.historicalData.length < 5
-    );
-    if (missing.length > 0) {
-      console.warn(
-        '[Page1FundExplorer] Funds with NO historical data returned from AMFI API:',
-        missing.map(f => `${f.schemeName} (code ${f.schemeCode})`)
-      );
-    }
-    return { missing, sparse };
-  }, [pinnedFunds]);
+  const toggleSort = (k: SortKey) =>
+    setSort(prev => (prev?.key === k ? (prev.dir === -1 ? { key: k, dir: 1 } : null) : { key: k, dir: k === 'name' ? 1 : -1 }));
 
-  // Generate chart data. Missing dates are left as real gaps (not forward-filled)
-  // so the line only bends where there's genuine NAV movement.
+  const SortTh: React.FC<{ k: SortKey; children: React.ReactNode; align?: 'left' | 'right' }> = ({ k, children, align = 'right' }) => (
+    <th style={{ textAlign: align, cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleSort(k)} aria-sort={sort?.key === k ? (sort.dir === 1 ? 'ascending' : 'descending') : 'none'}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+        {children}
+        {sort?.key === k && (sort.dir === 1 ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}
+      </span>
+    </th>
+  );
+
+  const staleFunds = useMemo(() => pinnedFunds.filter(f => f.isStale), [pinnedFunds]);
+
+  // ---- Chart data ---------------------------------------------------------
+  // The window is anchored on the newest NAV date across funds (not "now"),
+  // so a holiday or late NAV publish never shrinks the chart.
   const chartData = useMemo(() => {
-    if (pinnedFunds.length === 0) return [];
-    const dateMap = new Map<string, { [key: string]: any }>();
-    const now = new Date();
-    let daysToSubtract = 90;
-    if (timeframe === '1M') daysToSubtract = 30;
-    if (timeframe === '3M') daysToSubtract = 90;
-    if (timeframe === '6M') daysToSubtract = 180;
-    if (timeframe === '1Y') daysToSubtract = 365;
-    if (timeframe === 'ALL') daysToSubtract = 3650;
+    const withData = pinnedFunds.filter(f => f.historyAsc.length > 0);
+    if (withData.length === 0) return [];
+    const newest = Math.max(...withData.map(f => f.latestNavDate!.getTime()));
+    const days = { '1M': 30, '3M': 91, '6M': 182, '1Y': 365, '3Y': 365 * 3, ALL: Infinity }[timeframe];
+    const cutoff = days === Infinity ? -Infinity : newest - days * DAY_MS;
 
-    const cutoffTime = now.getTime() - daysToSubtract * 24 * 60 * 60 * 1000;
-
-    pinnedFunds.forEach(fund => {
-      if (!fund.historicalData || fund.historicalData.length === 0) return;
-
-      const validPoints = fund.historicalData
-        .filter(d => d.parsedDate.getTime() >= cutoffTime)
-        .sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
-
-      const baseNav = validPoints[0]?.nav || fund.latestNav;
-
-      validPoints.forEach(pt => {
-        const dateKey = pt.date;
-        if (!dateMap.has(dateKey)) {
-          dateMap.set(dateKey, {
-            date: dateKey,
-            parsedDate: pt.parsedDate
-          });
+    const map = new Map<number, { t: number; [k: string]: number }>();
+    withData.forEach(fund => {
+      const pts = fund.historyAsc.filter(p => p.parsedDate.getTime() >= cutoff);
+      if (pts.length === 0) return;
+      const base = pts[0].nav;
+      pts.forEach(p => {
+        const t = p.parsedDate.getTime();
+        let row = map.get(t);
+        if (!row) {
+          row = { t };
+          map.set(t, row);
         }
-        const entry = dateMap.get(dateKey)!;
-        if (chartMode === 'rebased') {
-          const rebasedVal = baseNav > 0 ? (pt.nav / baseNav) * 100 : 100;
-          entry[fund.schemeName] = Math.round(rebasedVal * 10000) / 10000;
-        } else {
-          entry[fund.schemeName] = pt.nav;
-        }
+        row[key(fund.schemeCode)] = chartMode === 'rebased' ? Math.round((p.nav / base) * 100 * 10000) / 10000 : p.nav;
       });
     });
-
-    return Array.from(dateMap.values()).sort(
-      (a, b) => a.parsedDate.getTime() - b.parsedDate.getTime()
-    );
+    return Array.from(map.values()).sort((a, b) => a.t - b.t);
   }, [pinnedFunds, timeframe, chartMode]);
 
+  const fundsKey = pinnedFunds.map(f => f.schemeCode).join(',');
   useEffect(() => {
     setSliderRange(null);
     setRefAreaLeft(null);
     setRefAreaRight(null);
     setHoveredPoint(null);
-  }, [pinnedFunds.map(f => f.schemeCode).join(','), timeframe, chartMode]);
+  }, [fundsKey, timeframe, chartMode]);
 
-  const fullRangeEndIndex = Math.max(chartData.length - 1, 0);
-  const effectiveRange: [number, number] = sliderRange ?? [0, fullRangeEndIndex];
-
-  const displayedData = useMemo(() => {
-    if (chartData.length === 0) return [];
-    const [lo, hi] = effectiveRange;
-    const safeLo = Math.max(0, Math.min(lo, chartData.length - 1));
-    const safeHi = Math.max(0, Math.min(hi, chartData.length - 1));
-    return chartData.slice(Math.min(safeLo, safeHi), Math.max(safeLo, safeHi) + 1);
-  }, [chartData, effectiveRange]);
-
-  const isZoomed = sliderRange !== null && (sliderRange[0] > 0 || sliderRange[1] < fullRangeEndIndex);
-
-  // Show real data-point markers once zoomed in enough that they won't clutter
-  // the line — this makes it visually obvious the curve passes through every
-  // actual NAV point rather than just looking like a vague smoothed shape.
+  const lastIdx = Math.max(chartData.length - 1, 0);
+  const range: [number, number] = sliderRange ?? [0, lastIdx];
+  const displayedData = useMemo(() => chartData.slice(Math.min(range[0], lastIdx), Math.min(range[1], lastIdx) + 1), [chartData, range, lastIdx]);
+  const isZoomed = sliderRange !== null && (sliderRange[0] > 0 || sliderRange[1] < lastIdx);
   const showDots = displayedData.length > 0 && displayedData.length <= 45;
+  const spanDays = displayedData.length > 1 ? (displayedData[displayedData.length - 1].t - displayedData[0].t) / DAY_MS : 0;
+  const tickFmt = (t: number) => {
+    const d = new Date(t);
+    return spanDays > 400 ? `${formatDateShort(d).slice(3)} ${String(d.getFullYear()).slice(2)}` : formatDateShort(d);
+  };
 
   const yDomain = useMemo((): [number, number] => {
-    if (pinnedFunds.length === 0 || displayedData.length === 0) return [0, 100];
     let min = Infinity;
     let max = -Infinity;
-    const keys = pinnedFunds.map(f => f.schemeName);
-    displayedData.forEach((row: any) => {
-      keys.forEach(k => {
-        const v = row[k];
-        if (typeof v === 'number' && !Number.isNaN(v)) {
+    displayedData.forEach(row => {
+      pinnedFunds.forEach(f => {
+        const v = row[key(f.schemeCode)];
+        if (typeof v === 'number') {
           if (v < min) min = v;
           if (v > max) max = v;
         }
       });
     });
-    if (min === Infinity || max === -Infinity) return [0, 100];
+    if (!isFinite(min)) return [0, 100];
     if (min === max) {
-      const pad = chartMode === 'rebased' ? 1 : Math.max(min * 0.01, 0.5);
+      const pad = Math.max(Math.abs(min) * 0.01, 0.5);
       return [min - pad, max + pad];
     }
-    const range = max - min;
-    const pad = range * 0.12;
-    return [Math.round((min - pad) * 10000) / 10000, Math.round((max + pad) * 10000) / 10000];
-  }, [pinnedFunds, displayedData, chartMode]);
+    const pad = (max - min) * 0.1;
+    return [min - pad, max + pad];
+  }, [pinnedFunds, displayedData]);
 
-  // --- Drag-to-zoom + hover tracking on the chart itself ---
+  const nameByKey = useMemo(() => Object.fromEntries(pinnedFunds.map(f => [key(f.schemeCode), f.schemeName])), [pinnedFunds]);
+
   const handleMouseDown = useCallback((e: any) => {
-    if (!e || !e.activeLabel) return;
-    setRefAreaLeft(e.activeLabel);
+    if (e?.activeLabel !== undefined) setRefAreaLeft(e.activeLabel);
   }, []);
-
-  const handleMouseMove = useCallback((e: any) => {
-    if (!e || !e.activeLabel) {
-      return;
-    }
-    if (refAreaLeft) {
-      setRefAreaRight(e.activeLabel);
-    }
-    // Track hover regardless of drag state, so the fixed bottom panel always
-    // reflects whatever date the cursor is currently over.
-    if (Array.isArray(e.activePayload) && e.activePayload.length > 0) {
-      setHoveredPoint({
-        date: e.activeLabel,
-        items: e.activePayload
-          .filter((p: any) => typeof p.value === 'number' && !Number.isNaN(p.value))
-          .map((p: any) => ({ name: p.name, value: p.value, color: p.color }))
-      });
-    }
-  }, [refAreaLeft]);
-
-  const handleMouseUp = useCallback(() => {
-    if (refAreaLeft && refAreaRight && refAreaLeft !== refAreaRight) {
-      const leftIdx = chartData.findIndex(d => d.date === refAreaLeft);
-      const rightIdx = chartData.findIndex(d => d.date === refAreaRight);
-      if (leftIdx !== -1 && rightIdx !== -1) {
-        setSliderRange([Math.min(leftIdx, rightIdx), Math.max(leftIdx, rightIdx)]);
+  const handleMouseMove = useCallback(
+    (e: any) => {
+      if (!e || e.activeLabel === undefined) return;
+      if (refAreaLeft !== null) setRefAreaRight(e.activeLabel);
+      if (Array.isArray(e.activePayload) && e.activePayload.length > 0) {
+        setHoveredPoint({
+          label: formatDateDisplay(new Date(e.activeLabel)),
+          items: e.activePayload
+            .filter((p: any) => typeof p.value === 'number')
+            .map((p: any) => ({ name: nameByKey[p.dataKey] || p.name, value: p.value, color: p.color }))
+            .sort((a: any, b: any) => b.value - a.value)
+        });
       }
+    },
+    [refAreaLeft, nameByKey]
+  );
+  const handleMouseUp = useCallback(() => {
+    if (refAreaLeft !== null && refAreaRight !== null && refAreaLeft !== refAreaRight) {
+      const l = chartData.findIndex(d => d.t === refAreaLeft);
+      const r = chartData.findIndex(d => d.t === refAreaRight);
+      if (l !== -1 && r !== -1) setSliderRange([Math.min(l, r), Math.max(l, r)]);
     }
     setRefAreaLeft(null);
     setRefAreaRight(null);
   }, [refAreaLeft, refAreaRight, chartData]);
 
-  const handleChartMouseLeave = useCallback(() => {
-    setHoveredPoint(null);
-    setRefAreaLeft(null);
-    setRefAreaRight(null);
-  }, []);
-
-  const handleResetZoom = () => {
-    setSliderRange(null);
-    setRefAreaLeft(null);
-    setRefAreaRight(null);
+  const best = (pick: (f: PinnedFund) => number | null) => {
+    const c = pinnedFunds.filter(f => pick(f) !== null);
+    return c.length ? c.reduce((a, b) => (pick(b)! > pick(a)! ? b : a)) : null;
   };
+  const best30 = best(f => f.return30d);
+  const best1y = best(f => f.return1y);
 
-  const handleSliderStartChange = (val: number) => {
-    const currentEnd = effectiveRange[1];
-    const clampedStart = Math.min(val, currentEnd - 1 >= 0 ? currentEnd - 1 : currentEnd);
-    setSliderRange([Math.max(0, clampedStart), currentEnd]);
+  const exportCSV = () => {
+    downloadCSV(`pinned_funds_${todayISO()}.csv`, [
+      ['Scheme Code', 'Fund', 'ISIN', 'AMC', 'Category', 'Latest NAV', 'NAV Date', '1D %', `NAV on ${pastDate}`, 'Change since %', '7D %', '30D %', '1Y %', '3Y CAGR %', '5Y CAGR %'],
+      ...rows.map(r => [
+        r.fund.schemeCode, r.fund.schemeName, r.fund.isin, r.fund.amc, r.fund.category, r.fund.latestNav, r.fund.navAsOf, r.fund.dayChangePct,
+        r.past?.nav ?? '', r.diff !== null ? r.diff.toFixed(4) : '', r.fund.return7d, r.fund.return30d, r.fund.return1y, r.fund.return3y, r.fund.return5y
+      ])
+    ]);
   };
-
-  const handleSliderEndChange = (val: number) => {
-    const currentStart = effectiveRange[0];
-    const clampedEnd = Math.max(val, currentStart + 1 <= fullRangeEndIndex ? currentStart + 1 : currentStart);
-    setSliderRange([currentStart, Math.min(fullRangeEndIndex, clampedEnd)]);
-  };
-
-  const topReturnFund = useMemo(() => {
-    if (pinnedFunds.length === 0) return null;
-    return [...pinnedFunds].sort((a, b) => b.return30d - a.return30d)[0];
-  }, [pinnedFunds]);
-
-  const bestReturn7dFund = useMemo(() => {
-    if (pinnedFunds.length === 0) return null;
-    return [...pinnedFunds].sort((a, b) => b.return7d - a.return7d)[0];
-  }, [pinnedFunds]);
-
-  const bestReturn30dFund = useMemo(() => {
-    if (pinnedFunds.length === 0) return null;
-    return [...pinnedFunds].sort((a, b) => b.return30d - a.return30d)[0];
-  }, [pinnedFunds]);
-
-  const rangeStartLabel = chartData[effectiveRange[0]]?.date ? formatDateDisplay(chartData[effectiveRange[0]].date) : '';
-  const rangeEndLabel = chartData[effectiveRange[1]]?.date ? formatDateDisplay(chartData[effectiveRange[1]].date) : '';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {/* Welcome Banner */}
-      <div className="card-panel" style={{ borderLeft: '4px solid var(--color-primary)', background: 'linear-gradient(90deg, #eff6ff 0%, #ffffff 100%)' }}>
-        <div style={{ display: 'flex', alignItems: 'start', gap: '16px' }}>
-          <div className="brand-icon" style={{ backgroundColor: 'var(--color-primary-light)', color: 'var(--color-primary)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <div className="card-panel page-hero" style={{ borderLeft: '4px solid var(--color-primary)', background: 'linear-gradient(90deg, #eff6ff 0%, #ffffff 100%)' }}>
+        <div style={{ display: 'flex', alignItems: 'start', gap: '14px' }}>
+          <div className="brand-icon hide-sm" style={{ backgroundColor: 'var(--color-primary-light)', color: 'var(--color-primary)', flexShrink: 0 }}>
             <Layers size={20} />
           </div>
           <div>
@@ -279,76 +214,70 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({
               <Sparkles size={12} />
               <span>Interactive Explorer</span>
             </div>
-            <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '4px', color: 'var(--text-primary)' }}>Master Mutual Fund Explorer</h2>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: '1.4' }}>
-              Search and pin mutual funds to view comparative NAV trajectories. Select a past date in the top bar to inspect historical NAV and performance differences at a glance.
-            </p>
+            <h2>Master Mutual Fund Explorer</h2>
+            <p>Search and pin funds to compare live AMFI NAVs and returns. Pick a past date in the top bar to see how much each NAV has moved since then.</p>
           </div>
         </div>
       </div>
 
-      {/* Data quality warning */}
-      {!isLoading && dataQuality.missing.length > 0 && (
-        <div
-          className="card-panel"
-          style={{
-            borderLeft: '4px solid var(--color-warning, #d97706)',
-            background: '#fffbeb',
-            display: 'flex',
-            alignItems: 'start',
-            gap: '12px',
-            padding: '14px 16px'
-          }}
-        >
+      {!isLoading && staleFunds.length > 0 && (
+        <div className="card-panel" style={{ borderLeft: '4px solid var(--color-warning)', background: '#fffbeb', display: 'flex', gap: '12px', padding: '14px 16px' }}>
           <AlertTriangle size={18} style={{ color: '#d97706', flexShrink: 0, marginTop: '2px' }} />
-          <div>
-            <div style={{ fontWeight: 700, fontSize: '0.82rem', color: '#92400e' }}>
-              {dataQuality.missing.length} pinned fund{dataQuality.missing.length > 1 ? 's' : ''} returned no historical NAV data
-            </div>
-            <div style={{ fontSize: '0.75rem', color: '#92400e', marginTop: '4px', lineHeight: '1.5' }}>
-              These schemes won't appear on the chart below because AMFI returned an empty history for them. This is usually a
-              temporary API hiccup or a scheme that only just launched — try Refresh, or check the console for the exact codes.
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
-              {dataQuality.missing.map(f => (
-                <span
-                  key={f.schemeCode}
-                  style={{
-                    fontSize: '0.68rem',
-                    fontFamily: 'var(--font-mono)',
-                    backgroundColor: '#fef3c7',
-                    color: '#92400e',
-                    padding: '2px 8px',
-                    borderRadius: '999px',
-                    border: '1px solid #fde68a'
-                  }}
-                  title={f.schemeName}
-                >
-                  {f.schemeCode}
-                </span>
-              ))}
-            </div>
+          <div style={{ fontSize: '0.78rem', color: '#92400e', lineHeight: 1.5 }}>
+            <strong>
+              {staleFunds.length} fund{staleFunds.length > 1 ? 's have' : ' has'} no NAV in the last 5 days
+            </strong>{' '}
+            (possibly merged, wound up, or a segregated portfolio): {staleFunds.map(f => `${shortName(f.schemeName, 40)} — last NAV ${f.navAsOf}`).join('; ')}.
           </div>
         </div>
       )}
 
-      {/* Main Table */}
+      {/* Stats */}
+      <div className="stat-grid">
+        <div className="card-panel stat-card">
+          <div className="stat-label">Pinned Funds</div>
+          <div className="stat-value" style={{ color: 'var(--color-primary)' }}>{pinnedFunds.length}</div>
+          <div className="stat-sub">{new Set(pinnedFunds.map(f => f.amc)).size} AMCs</div>
+        </div>
+        <div className="card-panel stat-card">
+          <div className="stat-label">Best 30D Return</div>
+          <div className={`stat-value ${pctClass(best30?.return30d)}`}>{fmtPct(best30?.return30d)}</div>
+          <div className="stat-sub" title={best30?.schemeName}>{best30 ? shortName(best30.schemeName) : '—'}</div>
+        </div>
+        <div className="card-panel stat-card">
+          <div className="stat-label">Best 1Y Return</div>
+          <div className={`stat-value ${pctClass(best1y?.return1y)}`}>{fmtPct(best1y?.return1y)}</div>
+          <div className="stat-sub" title={best1y?.schemeName}>{best1y ? shortName(best1y.schemeName) : '—'}</div>
+        </div>
+        <div className="card-panel stat-card">
+          <div className="stat-label">Latest NAV Date</div>
+          <div className="stat-value" style={{ color: 'var(--color-purple)', fontSize: '1.05rem' }}>
+            {pinnedFunds.length ? formatDateDisplay(new Date(Math.max(...pinnedFunds.map(f => f.latestNavDate?.getTime() || 0)))) : '—'}
+          </div>
+          <div className="stat-sub">AMFI publishes NAVs each business day evening</div>
+        </div>
+      </div>
+
+      {/* Table */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Filter size={18} className="text-slate-500" />
-            <h3 className="card-title" style={{ margin: 0 }}>Active Directory Comparison</h3>
-            <span className="badge badge-blue">{filteredFunds.length} Funds</span>
+            <h3 className="card-title" style={{ margin: 0 }}>Pinned Funds</h3>
+            <span className="badge badge-blue">{rows.length}</span>
           </div>
-          <div className="relative">
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }} className="full-sm">
             <input
-              type="text"
-              placeholder="Filter list by name, AMC, ISIN..."
+              type="search"
+              placeholder="Filter by name, AMC, ISIN, category…"
               value={tableFilter}
               onChange={e => setTableFilter(e.target.value)}
               className="input-text"
-              style={{ width: '260px', padding: '8px 12px' }}
+              style={{ width: '280px', flex: '1 1 200px' }}
             />
+            <button className="btn btn-outline" onClick={exportCSV} disabled={rows.length === 0} style={{ padding: '7px 12px', fontSize: '0.75rem' }}>
+              <Download size={14} /> CSV
+            </button>
           </div>
         </div>
 
@@ -356,16 +285,20 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({
           <table className="financial-table">
             <thead>
               <tr>
-                <th>Fund Name</th>
+                <SortTh k="name" align="left">Fund Name</SortTh>
+                <th>Category</th>
                 <th>ISIN</th>
                 <th>AMC</th>
-                <th>Launch Date</th>
-                <th style={{ textAlign: 'right' }}>Latest NAV</th>
+                <SortTh k="nav">Latest NAV</SortTh>
+                <SortTh k="day">1D</SortTh>
                 <th style={{ textAlign: 'right' }}>NAV As Of</th>
-                <th style={{ textAlign: 'right' }}>NAV on Selected Date</th>
-                <th style={{ textAlign: 'right' }}>NAV Diff %</th>
-                <th style={{ textAlign: 'right' }}>7D Return</th>
-                <th style={{ textAlign: 'right' }}>30D Return</th>
+                <th style={{ textAlign: 'right' }}>NAV on {isPastDateSelected ? formatDateDisplay(pastDate) : 'Selected Date'}</th>
+                <SortTh k="diff">Change Since</SortTh>
+                <SortTh k="r7">7D</SortTh>
+                <SortTh k="r30">30D</SortTh>
+                <SortTh k="r1y">1Y</SortTh>
+                <SortTh k="r3y">3Y CAGR</SortTh>
+                <th style={{ textAlign: 'right' }}>History From</th>
                 <th style={{ textAlign: 'center' }}>Action</th>
               </tr>
             </thead>
@@ -373,394 +306,226 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({
               {isLoading ? (
                 Array.from({ length: 4 }).map((_, i) => (
                   <tr key={i}>
-                    <td colSpan={11} style={{ padding: '16px' }}><div className="skeleton" style={{ height: '18px' }}></div></td>
+                    <td colSpan={15} style={{ padding: '16px' }}>
+                      <div className="skeleton" style={{ height: '18px' }} />
+                    </td>
                   </tr>
                 ))
-              ) : filteredFunds.length === 0 ? (
+              ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={11} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-secondary)' }}>
-                    No funds pinned yet. Use the search bar above to find and pin funds.
+                  <td colSpan={15} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-secondary)', whiteSpace: 'normal' }}>
+                    {pinnedFunds.length === 0 ? 'No funds pinned yet. Use the search bar above to find and pin funds.' : 'No funds match the filter.'}
                   </td>
                 </tr>
               ) : (
-                filteredFunds.map((fund, idx) => {
-                  const pastNavData = getNavOnDate(fund, pastDate);
-                  let pastDiffPct: number | null = null;
-                  if (pastNavData && pastNavData.nav > 0) {
-                    pastDiffPct = ((fund.latestNav - pastNavData.nav) / pastNavData.nav) * 100;
-                  }
-                  const hasNoHistory = !fund.historicalData || fund.historicalData.length === 0;
-
-                  return (
-                    <tr key={fund.schemeCode}>
-                      <td style={{ fontWeight: 600 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: colorPalette[idx % colorPalette.length], flexShrink: 0 }}></span>
-                          <span title={fund.schemeName} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '240px' }}>{fund.schemeName}</span>
-                          {hasNoHistory && (
-                            <span title="No historical NAV data returned" style={{ display: 'inline-flex' }}>
-                              <AlertTriangle size={12} style={{ color: '#d97706', flexShrink: 0 }} />
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{fund.isin}</td>
-                      <td style={{ fontSize: '0.8rem', fontWeight: 500 }}>{fund.amc}</td>
-                      <td style={{ color: 'var(--text-muted)' }}>{fund.launchDate}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--color-success)' }}>₹{fund.latestNav.toFixed(4)}</td>
-                      <td style={{ color: 'var(--text-muted)', textAlign: 'right' }}>{fund.navAsOf}</td>
-
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                        {pastNavData ? (
-                          <span title={`NAV on ${pastNavData.date}`}>₹{pastNavData.nav.toFixed(4)}</span>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)' }}>—</span>
-                        )}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        {pastDiffPct !== null ? (
-                          <span className={pastDiffPct >= 0 ? 'val-positive' : 'val-negative'}>
-                            {pastDiffPct >= 0 ? '+' : ''}{pastDiffPct.toFixed(2)}%
+                rows.map(({ fund, past, diff }) => (
+                  <tr key={fund.schemeCode}>
+                    <td style={{ fontWeight: 600 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: colorOf(fund.schemeCode), flexShrink: 0 }} />
+                        <span title={fund.schemeName} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '260px' }}>
+                          {fund.schemeName}
+                        </span>
+                        {fund.isStale && (
+                          <span title={`No NAV since ${fund.navAsOf}`} style={{ display: 'inline-flex' }}>
+                            <AlertTriangle size={12} style={{ color: '#d97706' }} />
                           </span>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)' }}>—</span>
                         )}
-                      </td>
-
-                      <td style={{ textAlign: 'right' }}>
-                        <span className={fund.return7d >= 0 ? 'val-positive' : 'val-negative'}>
-                          {fund.return7d >= 0 ? '+' : ''}{fund.return7d.toFixed(2)}%
-                        </span>
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <span className={fund.return30d >= 0 ? 'val-positive' : 'val-negative'}>
-                          {fund.return30d >= 0 ? '+' : ''}{fund.return30d.toFixed(2)}%
-                        </span>
-                      </td>
-
-                      <td style={{ textAlign: 'center' }}>
-                        <button onClick={() => onTogglePin(fund.schemeCode)} className="btn btn-danger-outline" style={{ padding: '4px 8px', fontSize: '0.72rem' }}>
-                          Unpin
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
+                      </div>
+                    </td>
+                    <td style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>{fund.category}</td>
+                    <td className="font-mono" style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{fund.isin}</td>
+                    <td style={{ fontSize: '0.78rem' }}>{fund.amc}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtNav(fund.latestNav)}</td>
+                    <td style={{ textAlign: 'right' }} className={pctClass(fund.dayChangePct)}>{fmtPct(fund.dayChangePct)}</td>
+                    <td style={{ color: 'var(--text-muted)', textAlign: 'right' }}>{fund.navAsOf}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }} title={past ? `NAV published on ${past.date}` : 'No NAV on or before this date'}>
+                      {past ? fmtNav(past.nav) : <span className="val-muted">—</span>}
+                      {past && isPastDateSelected && past.date !== formatDateDisplay(pastDate) && (
+                        <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontWeight: 400 }}>as of {past.date}</div>
+                      )}
+                    </td>
+                    <td style={{ textAlign: 'right' }} className={pctClass(diff)}>{fmtPct(diff)}</td>
+                    <td style={{ textAlign: 'right' }} className={pctClass(fund.return7d)}>{fmtPct(fund.return7d)}</td>
+                    <td style={{ textAlign: 'right' }} className={pctClass(fund.return30d)}>{fmtPct(fund.return30d)}</td>
+                    <td style={{ textAlign: 'right' }} className={pctClass(fund.return1y)}>{fmtPct(fund.return1y)}</td>
+                    <td style={{ textAlign: 'right' }} className={pctClass(fund.return3y)}>{fmtPct(fund.return3y)}</td>
+                    <td style={{ color: 'var(--text-muted)', textAlign: 'right' }}>{fund.launchDate}</td>
+                    <td style={{ textAlign: 'center' }}>
+                      <button onClick={() => onTogglePin(fund.schemeCode)} className="btn btn-danger-outline" style={{ padding: '4px 8px', fontSize: '0.72rem' }}>
+                        Unpin
+                      </button>
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
         </div>
+        <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '-4px' }}>
+          7D / 30D / 1Y are absolute point-to-point returns; 3Y is CAGR. "—" means the fund doesn't have enough history yet. Tap a column header to sort.
+        </p>
       </div>
 
-      {/* Charts Section */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+      {/* Chart */}
+      <div className="card-panel">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: 12 }}>
           <div>
-            <h3 className="card-title">Performance Comparison Charts</h3>
-            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-              Compare rebased indices or absolute historical values. Drag on the chart or use the slider below it to zoom.
-              Hover to inspect exact values in the panel below.
+            <h3 className="card-title">Performance Comparison Chart</h3>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              {chartMode === 'rebased' ? 'Every fund starts at 100 on the first day of the range, so lines are directly comparable.' : 'Actual published NAV values.'} Drag on the chart or use the slider to zoom.
             </p>
           </div>
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
             {isZoomed && (
-              <button
-                onClick={handleResetZoom}
-                className="btn btn-outline"
-                style={{ padding: '4px 10px', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-                title="Reset zoom to full range"
-              >
-                <ZoomOut size={13} />
-                Reset Zoom
+              <button onClick={() => setSliderRange(null)} className="btn btn-outline" style={{ padding: '4px 10px', fontSize: '0.72rem' }}>
+                <ZoomOut size={13} /> Reset
               </button>
             )}
-
-            <div style={{ display: 'flex', backgroundColor: '#e2e8f0', padding: '3px', borderRadius: 'var(--radius-sm)' }}>
-              <button onClick={() => setChartMode('rebased')} className="btn" style={{ padding: '4px 10px', fontSize: '0.72rem', backgroundColor: chartMode === 'rebased' ? '#ffffff' : 'transparent', color: 'var(--text-primary)', boxShadow: chartMode === 'rebased' ? 'var(--shadow-sm)' : 'none' }}>Rebased (Base 100)</button>
-              <button onClick={() => setChartMode('absolute')} className="btn" style={{ padding: '4px 10px', fontSize: '0.72rem', backgroundColor: chartMode === 'absolute' ? '#ffffff' : 'transparent', color: 'var(--text-primary)', boxShadow: chartMode === 'absolute' ? 'var(--shadow-sm)' : 'none' }}>Absolute NAV</button>
+            <div className="segmented">
+              <button className={chartMode === 'rebased' ? 'active' : ''} onClick={() => setChartMode('rebased')}>Rebased 100</button>
+              <button className={chartMode === 'absolute' ? 'active' : ''} onClick={() => setChartMode('absolute')}>NAV ₹</button>
             </div>
-
-            <div style={{ display: 'flex', backgroundColor: '#e2e8f0', padding: '3px', borderRadius: 'var(--radius-sm)' }}>
-              {(['1M', '3M', '6M', '1Y', 'ALL'] as const).map(tf => (
-                <button key={tf} onClick={() => setTimeframe(tf)} className="btn" style={{ padding: '4px 8px', fontSize: '0.72rem', backgroundColor: timeframe === tf ? '#ffffff' : 'transparent', color: 'var(--text-primary)', boxShadow: timeframe === tf ? 'var(--shadow-sm)' : 'none' }}>{tf}</button>
+            <div className="segmented">
+              {(['1M', '3M', '6M', '1Y', '3Y', 'ALL'] as const).map(tf => (
+                <button key={tf} className={timeframe === tf ? 'active' : ''} onClick={() => setTimeframe(tf)}>{tf}</button>
               ))}
             </div>
           </div>
         </div>
 
-        {/* Dashboard Stats */}
-        <div className="panel-grid-4">
-          <div className="card-panel" style={{ padding: '16px' }}>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Pinned Funds</span>
-            <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: '4px' }}>{pinnedFunds.length}</div>
-          </div>
-          <div className="card-panel" style={{ padding: '16px' }}>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Best 30D Return</span>
-            <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-success)', marginTop: '4px' }}>
-              {topReturnFund ? `+${topReturnFund.return30d.toFixed(2)}%` : '—'}
+        {pinnedFunds.length === 0 ? (
+          <div style={{ height: '260px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>Pin schemes to see the chart.</div>
+        ) : chartData.length === 0 ? (
+          <div style={{ height: '260px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', textAlign: 'center' }}>No NAV data in this range.</div>
+        ) : (
+          <>
+            <div className="chart-box">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={displayedData}
+                  margin={{ top: 10, right: 12, left: 0, bottom: 0 }}
+                  onMouseDown={handleMouseDown}
+                  onMouseMove={handleMouseMove}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={() => {
+                    setRefAreaLeft(null);
+                    setRefAreaRight(null);
+                  }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="t" type="category" stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={tickFmt} minTickGap={28} />
+                  <YAxis
+                    stroke="#94a3b8"
+                    tick={{ fill: '#64748b', fontSize: 10 }}
+                    domain={yDomain}
+                    allowDataOverflow
+                    width={chartMode === 'rebased' ? 44 : 62}
+                    tickFormatter={v => (chartMode === 'rebased' ? Number(v).toFixed(1) : `₹${Number(v) >= 1000 ? Math.round(v) : Number(v).toFixed(1)}`)}
+                  />
+                  <Tooltip content={() => null} cursor={{ stroke: '#94a3b8', strokeDasharray: '4 4', strokeWidth: 1 }} />
+                  {pinnedFunds.map(fund => (
+                    <Line
+                      key={fund.schemeCode}
+                      type="monotone"
+                      dataKey={key(fund.schemeCode)}
+                      name={fund.schemeName}
+                      stroke={colorOf(fund.schemeCode)}
+                      strokeWidth={2}
+                      dot={showDots ? { r: 2.5, strokeWidth: 0, fill: colorOf(fund.schemeCode) } : false}
+                      activeDot={{ r: 4 }}
+                      connectNulls
+                      isAnimationActive={false}
+                    />
+                  ))}
+                  {refAreaLeft !== null && refAreaRight !== null && <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="#2563eb" fillOpacity={0.12} />}
+                </LineChart>
+              </ResponsiveContainer>
             </div>
-            {topReturnFund && <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{topReturnFund.schemeName.split('-')[0].trim()}</div>}
-          </div>
-          <div className="card-panel" style={{ padding: '16px' }}>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Best 7D Return</span>
-            <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-warning)', marginTop: '4px' }}>
-              {bestReturn7dFund ? `+${bestReturn7dFund.return7d.toFixed(2)}%` : '—'}
-            </div>
-            {bestReturn7dFund && <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{bestReturn7dFund.schemeName.split('-')[0].trim()}</div>}
-          </div>
-          <div className="card-panel" style={{ padding: '16px' }}>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Funds w/ Data</span>
-            <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-purple)', marginTop: '4px' }}>
-              {pinnedFunds.filter(f => f.historicalData && f.historicalData.length > 0).length} / {pinnedFunds.length}
-            </div>
-          </div>
-        </div>
 
-        <div className="card-panel">
-          {pinnedFunds.length === 0 ? (
-            <div style={{ height: '280px', display: 'flex', alignItems: 'center', justifySelf: 'center', color: 'var(--text-muted)' }}>
-              Pin schemes to view trajectory chart overlay.
-            </div>
-          ) : chartData.length === 0 ? (
-            <div style={{ height: '280px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', textAlign: 'center', padding: '0 24px' }}>
-              No chart data in this range — the pinned funds may have no historical NAV points within the selected timeframe.
-            </div>
-          ) : (
-            <>
-              <div style={{ height: '320px', width: '100%', userSelect: 'none' }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart
-                    data={displayedData}
-                    margin={{ top: 10, right: 30, left: 10, bottom: 0 }}
-                    onMouseDown={handleMouseDown}
-                    onMouseMove={handleMouseMove}
-                    onMouseUp={handleMouseUp}
-                    onMouseLeave={handleChartMouseLeave}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="date" stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 11 }} allowDataOverflow />
-                    <YAxis
-                      stroke="#94a3b8"
-                      tick={{ fill: '#64748b', fontSize: 11 }}
-                      domain={yDomain}
-                      allowDataOverflow
-                      tickFormatter={val => chartMode === 'rebased' ? `${val}` : `₹${val}`}
-                    />
-                    {/* Default popup box is suppressed (content=null) — we keep only the
-                        dashed crosshair cursor. Actual values render in the fixed panel
-                        below the chart instead of a floating box over the lines. */}
-                    <Tooltip
-                      content={() => null}
-                      cursor={{ stroke: '#94a3b8', strokeDasharray: '4 4', strokeWidth: 1 }}
-                    />
-                    <Legend wrapperStyle={{ paddingTop: '12px', fontSize: '12px' }} />
-                    {pinnedFunds.map((fund, idx) => (
-                      <Line
-                        key={fund.schemeCode}
-                        type="natural"
-                        dataKey={fund.schemeName}
-                        stroke={colorPalette[idx % colorPalette.length]}
-                        strokeWidth={2}
-                        dot={showDots ? { r: 2.5, strokeWidth: 0, fill: colorPalette[idx % colorPalette.length] } : false}
-                        activeDot={{ r: 4 }}
-                        connectNulls
-                        isAnimationActive={false}
-                      />
+            <div className="chart-hover-panel">
+              {hoveredPoint ? (
+                <>
+                  <div className="chart-hover-date">
+                    <Crosshair size={12} />
+                    {hoveredPoint.label}
+                  </div>
+                  <div className="chart-hover-grid">
+                    {hoveredPoint.items.map(item => (
+                      <div key={item.name} className="chart-hover-item">
+                        <span className="chart-hover-dot" style={{ backgroundColor: item.color }} />
+                        <span className="chart-hover-name" title={item.name}>{item.name}</span>
+                        <span className="chart-hover-value">
+                          {chartMode === 'rebased' ? `${item.value.toFixed(2)} (${fmtPct(item.value - 100)})` : fmtNav(item.value)}
+                        </span>
+                      </div>
                     ))}
-                    {refAreaLeft && refAreaRight && (
-                      <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="#2563eb" fillOpacity={0.12} />
-                    )}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-
-              {/* Fixed hover panel — pinned below the chart, never overlaps the lines */}
-              <div className="chart-hover-panel">
-                {hoveredPoint ? (
-                  <>
-                    <div className="chart-hover-date">
-                      <Crosshair size={12} />
-                      {formatDateDisplay(hoveredPoint.date)}
-                    </div>
-                    <div className="chart-hover-grid">
-                      {hoveredPoint.items.map(item => (
-                        <div key={item.name} className="chart-hover-item">
-                          <span className="chart-hover-dot" style={{ backgroundColor: item.color }} />
-                          <span className="chart-hover-name" title={item.name}>{item.name}</span>
-                          <span className="chart-hover-value">
-                            {chartMode === 'rebased' ? item.value.toFixed(4) : `₹${item.value.toFixed(4)}`}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <div className="chart-hover-placeholder">Hover over the chart to inspect exact values for a date.</div>
-                )}
-              </div>
-
-              {/* Dual-handle zoom slider */}
-              {chartData.length > 2 && (
-                <div style={{ marginTop: '18px', padding: '0 8px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '6px', fontFamily: 'var(--font-mono)' }}>
-                    <span>{rangeStartLabel}</span>
-                    <span>{rangeEndLabel}</span>
                   </div>
-                  <div className="dual-slider-track">
-                    <div
-                      className="dual-slider-fill"
-                      style={{
-                        left: `${(effectiveRange[0] / fullRangeEndIndex) * 100}%`,
-                        right: `${100 - (effectiveRange[1] / fullRangeEndIndex) * 100}%`
-                      }}
-                    />
-                    <input
-                      type="range"
-                      min={0}
-                      max={fullRangeEndIndex}
-                      value={effectiveRange[0]}
-                      onChange={e => handleSliderStartChange(Number(e.target.value))}
-                      className="dual-slider-input dual-slider-input-left"
-                    />
-                    <input
-                      type="range"
-                      min={0}
-                      max={fullRangeEndIndex}
-                      value={effectiveRange[1]}
-                      onChange={e => handleSliderEndChange(Number(e.target.value))}
-                      className="dual-slider-input dual-slider-input-right"
-                    />
-                  </div>
-                </div>
+                </>
+              ) : (
+                <div className="chart-hover-placeholder">Hover or tap the chart to see exact values for a date.</div>
               )}
-            </>
-          )}
-        </div>
+            </div>
+
+            {chartData.length > 2 && (
+              <div style={{ marginTop: '16px', padding: '0 4px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '6px', fontFamily: 'var(--font-mono)' }}>
+                  <span>{formatDateDisplay(new Date(chartData[range[0]].t))}</span>
+                  <span>{formatDateDisplay(new Date(chartData[Math.min(range[1], lastIdx)].t))}</span>
+                </div>
+                <div className="dual-slider-track">
+                  <div className="dual-slider-fill" style={{ left: `${(range[0] / lastIdx) * 100}%`, right: `${100 - (range[1] / lastIdx) * 100}%` }} />
+                  <input
+                    type="range"
+                    min={0}
+                    max={lastIdx}
+                    value={range[0]}
+                    onChange={e => setSliderRange([Math.min(Number(e.target.value), range[1] - 1), range[1]])}
+                    className="dual-slider-input"
+                    aria-label="Zoom start"
+                  />
+                  <input
+                    type="range"
+                    min={0}
+                    max={lastIdx}
+                    value={range[1]}
+                    onChange={e => setSliderRange([range[0], Math.max(Number(e.target.value), range[0] + 1)])}
+                    className="dual-slider-input"
+                    aria-label="Zoom end"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Legend (wraps nicely on phones, unlike the built-in one) */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', marginTop: 14 }}>
+              {pinnedFunds.map(f => (
+                <span key={f.schemeCode} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: 'var(--text-secondary)' }} title={f.schemeName}>
+                  <span style={{ width: 10, height: 3, borderRadius: 2, background: colorOf(f.schemeCode) }} />
+                  {shortName(f.schemeName, 40)}
+                </span>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Scoped styles for the dual-handle zoom slider + fixed hover panel */}
       <style>{`
-        .chart-hover-panel {
-          margin-top: 14px;
-          padding: 10px 14px;
-          border: 1px solid var(--border-light, #e2e8f0);
-          border-radius: var(--radius-md, 8px);
-          background-color: #f8fafc;
-          min-height: 44px;
-        }
-        .chart-hover-date {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 0.72rem;
-          font-weight: 700;
-          color: var(--text-primary, #0f172a);
-          font-family: var(--font-mono);
-          margin-bottom: 8px;
-        }
-        .chart-hover-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-          gap: 6px 16px;
-        }
-        .chart-hover-item {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 0.74rem;
-          min-width: 0;
-        }
-        .chart-hover-dot {
-          width: 7px;
-          height: 7px;
-          border-radius: 50%;
-          flex-shrink: 0;
-        }
-        .chart-hover-name {
-          color: var(--text-secondary, #475569);
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          flex: 1;
-          min-width: 0;
-        }
-        .chart-hover-value {
-          font-weight: 700;
-          font-family: var(--font-mono);
-          color: var(--text-primary, #0f172a);
-          flex-shrink: 0;
-        }
-        .chart-hover-placeholder {
-          font-size: 0.74rem;
-          color: var(--text-muted, #94a3b8);
-          text-align: center;
-          padding: 4px 0;
-        }
-
-        .dual-slider-track {
-          position: relative;
-          height: 28px;
-        }
-        .dual-slider-fill {
-          position: absolute;
-          top: 12px;
-          height: 4px;
-          background-color: var(--color-primary, #2563eb);
-          border-radius: 2px;
-          pointer-events: none;
-        }
-        .dual-slider-input {
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          margin: 0;
-          height: 28px;
-          background: transparent;
-          -webkit-appearance: none;
-          appearance: none;
-          pointer-events: none;
-        }
-        .dual-slider-track::before {
-          content: '';
-          position: absolute;
-          top: 12px;
-          left: 0;
-          right: 0;
-          height: 4px;
-          background-color: #e2e8f0;
-          border-radius: 2px;
-        }
-        .dual-slider-input::-webkit-slider-thumb {
-          -webkit-appearance: none;
-          appearance: none;
-          pointer-events: all;
-          width: 16px;
-          height: 16px;
-          border-radius: 50%;
-          background: #ffffff;
-          border: 2.5px solid var(--color-primary, #2563eb);
-          cursor: pointer;
-          box-shadow: var(--shadow-sm, 0 1px 2px rgba(0,0,0,0.15));
-          position: relative;
-          z-index: 2;
-        }
-        .dual-slider-input::-moz-range-thumb {
-          pointer-events: all;
-          width: 16px;
-          height: 16px;
-          border-radius: 50%;
-          background: #ffffff;
-          border: 2.5px solid var(--color-primary, #2563eb);
-          cursor: pointer;
-          box-shadow: var(--shadow-sm, 0 1px 2px rgba(0,0,0,0.15));
-        }
-        .dual-slider-input::-webkit-slider-runnable-track {
-          background: transparent;
-        }
-        .dual-slider-input::-moz-range-track {
-          background: transparent;
-        }
+        .chart-hover-panel { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background-color: #f8fafc; min-height: 44px; }
+        .chart-hover-date { display: flex; align-items: center; gap: 6px; font-size: 0.72rem; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); margin-bottom: 8px; }
+        .chart-hover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 6px 16px; }
+        .chart-hover-item { display: flex; align-items: center; gap: 6px; font-size: 0.74rem; min-width: 0; }
+        .chart-hover-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+        .chart-hover-name { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+        .chart-hover-value { font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); flex-shrink: 0; }
+        .chart-hover-placeholder { font-size: 0.74rem; color: var(--text-muted); text-align: center; padding: 4px 0; }
+        .dual-slider-track { position: relative; height: 28px; }
+        .dual-slider-track::before { content: ''; position: absolute; top: 12px; left: 0; right: 0; height: 4px; background-color: #e2e8f0; border-radius: 2px; }
+        .dual-slider-fill { position: absolute; top: 12px; height: 4px; background-color: var(--color-primary); border-radius: 2px; pointer-events: none; }
+        .dual-slider-input { position: absolute; top: 0; left: 0; width: 100%; margin: 0; height: 28px; background: transparent; -webkit-appearance: none; appearance: none; pointer-events: none; }
+        .dual-slider-input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; pointer-events: all; width: 20px; height: 20px; border-radius: 50%; background: #fff; border: 2.5px solid var(--color-primary); cursor: pointer; box-shadow: var(--shadow-sm); position: relative; z-index: 2; }
+        .dual-slider-input::-moz-range-thumb { pointer-events: all; width: 18px; height: 18px; border-radius: 50%; background: #fff; border: 2.5px solid var(--color-primary); cursor: pointer; }
+        .dual-slider-input::-webkit-slider-runnable-track, .dual-slider-input::-moz-range-track { background: transparent; }
       `}</style>
     </div>
   );

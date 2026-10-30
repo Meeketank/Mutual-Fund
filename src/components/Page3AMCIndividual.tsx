@@ -1,429 +1,349 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Building2, Sparkles, BarChart3, ArrowUpRight, Activity } from 'lucide-react';
-import {
-  ResponsiveContainer,
-  ComposedChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  Legend,
-  CartesianGrid,
-  Brush
-} from 'recharts';
+import { Building2, Sparkles, BarChart3, Activity, Calculator, Download } from 'lucide-react';
+import { ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
 import { PinnedFund, GranularNAVRow } from '../types/mf';
-import { generateAMCNAVRows } from '../services/amfiApi';
+import { generateAMCNAVRows, formatDateDisplay } from '../services/amfiApi';
+import { endOfDay, parseISODate, returnBetween, shiftISODate, simulateSip, toISODate } from '../services/calc';
+import { fmtNav, fmtPct, fmtINR, pctClass, downloadCSV } from '../services/format';
 
 interface Page3Props {
   pinnedFunds: PinnedFund[];
   isLoading: boolean;
 }
 
-export const Page3AMCIndividual: React.FC<Page3Props> = ({
-  pinnedFunds,
-  isLoading
-}) => {
-  const [selectedSchemeCode, setSelectedSchemeCode] = useState<number | null>(
-    pinnedFunds[0]?.schemeCode || null
-  );
+export const Page3AMCIndividual: React.FC<Page3Props> = ({ pinnedFunds, isLoading }) => {
+  const [selectedSchemeCode, setSelectedSchemeCode] = useState<number | null>(null);
   const [rowLimit, setRowLimit] = useState<number>(60);
-  const [magnifyDifferences, setMagnifyDifferences] = useState<boolean>(true);
+  const [magnify, setMagnify] = useState<boolean>(true);
   const [zoomDays, setZoomDays] = useState<number>(60);
   const [panOffset, setPanOffset] = useState<number>(0);
 
-  const selectedFund = useMemo(() => {
-    if (!selectedSchemeCode) return pinnedFunds[0] || null;
-    return pinnedFunds.find(f => f.schemeCode === selectedSchemeCode) || pinnedFunds[0] || null;
-  }, [pinnedFunds, selectedSchemeCode]);
+  // Investment calculator
+  const [calcMode, setCalcMode] = useState<'lumpsum' | 'sip'>('lumpsum');
+  const [calcAmount, setCalcAmount] = useState<number>(100000);
+  const [calcFrom, setCalcFrom] = useState<string>('');
+  const [calcTo, setCalcTo] = useState<string>('');
 
-  const granularRows = useMemo<GranularNAVRow[]>(() => {
-    if (!selectedFund) return [];
-    return generateAMCNAVRows(selectedFund, rowLimit);
-  }, [selectedFund, rowLimit]);
+  const selectedFund = useMemo(
+    () => pinnedFunds.find(f => f.schemeCode === selectedSchemeCode) || pinnedFunds[0] || null,
+    [pinnedFunds, selectedSchemeCode]
+  );
 
-  const chartData = useMemo(() => {
-    return [...granularRows].reverse().map(r => ({
-      date: r.date,
-      NAV: r.closingNav,
-      '7D Return (% p.a.)': r.rollingReturn7dAnn,
-      '15D Return (% p.a.)': r.rollingReturn15dAnn,
-      '30D Return (% p.a.)': r.rollingReturn30dAnn
-    }));
-  }, [granularRows]);
+  useEffect(() => {
+    if (!selectedFund?.latestNavDate) return;
+    const to = toISODate(selectedFund.latestNavDate);
+    setCalcTo(to);
+    setCalcFrom(shiftISODate(to, -365));
+  }, [selectedFund?.schemeCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const slicedRawData = useMemo(() => {
-    if (chartData.length === 0) return [];
+  const granularRows = useMemo<GranularNAVRow[]>(() => (selectedFund ? generateAMCNAVRows(selectedFund, rowLimit) : []), [selectedFund, rowLimit]);
+
+  const chartData = useMemo(
+    () =>
+      [...granularRows].reverse().map(r => ({
+        date: r.date.slice(0, 6),
+        fullDate: r.date,
+        NAV: r.closingNav,
+        r7: r.rollingReturn7dAnn,
+        r15: r.rollingReturn15dAnn,
+        r30: r.rollingReturn30dAnn
+      })),
+    [granularRows]
+  );
+
+  const sliced = useMemo(() => {
     const N = chartData.length;
-    const windowSize = Math.min(N, zoomDays);
-    const offset = Math.min(N - windowSize, panOffset);
-    const startIdx = Math.max(0, N - windowSize - offset);
-    const endIdx = Math.min(N, startIdx + windowSize);
-    return chartData.slice(startIdx, endIdx);
+    if (N === 0) return [];
+    const win = Math.min(N, zoomDays);
+    const off = Math.min(N - win, panOffset);
+    const start = Math.max(0, N - win - off);
+    return chartData.slice(start, start + win);
   }, [chartData, zoomDays, panOffset]);
-
-  const interpolationSteps = useMemo(() => {
-    const days = slicedRawData.length;
-    if (days <= 15) return 12;
-    if (days <= 30) return 8;
-    if (days <= 60) return 4;
-    if (days <= 90) return 2;
-    return 1;
-  }, [slicedRawData]);
-
-  const interpolatedChartData = useMemo(() => {
-    const steps = interpolationSteps;
-    if (steps <= 1 || slicedRawData.length < 2) return slicedRawData;
-
-    const result: any[] = [];
-    for (let i = 0; i < slicedRawData.length - 1; i++) {
-      const current = slicedRawData[i];
-      const next = slicedRawData[i + 1];
-
-      result.push(current);
-
-      for (let step = 1; step < steps; step++) {
-        const t = step / steps;
-        const navCurr = current.NAV ?? 0;
-        const navNext = next.NAV ?? 0;
-        const ret7dCurr = current['7D Return (% p.a.)'] ?? 0;
-        const ret7dNext = next['7D Return (% p.a.)'] ?? 0;
-        const ret15dCurr = current['15D Return (% p.a.)'] ?? 0;
-        const ret15dNext = next['15D Return (% p.a.)'] ?? 0;
-        const ret30dCurr = current['30D Return (% p.a.)'] ?? 0;
-        const ret30dNext = next['30D Return (% p.a.)'] ?? 0;
-
-        result.push({
-          date: `${current.date}${"\u200B".repeat(step)}`,
-          isIntermediate: true,
-          NAV: Number((navCurr + (navNext - navCurr) * t).toFixed(4)),
-          '7D Return (% p.a.)': Number((ret7dCurr + (ret7dNext - ret7dCurr) * t).toFixed(2)),
-          '15D Return (% p.a.)': Number((ret15dCurr + (ret15dNext - ret15dCurr) * t).toFixed(2)),
-          '30D Return (% p.a.)': Number((ret30dCurr + (ret30dNext - ret30dCurr) * t).toFixed(2)),
-        });
-      }
-    }
-    result.push(slicedRawData[slicedRawData.length - 1]);
-    return result;
-  }, [slicedRawData, interpolationSteps]);
 
   useEffect(() => {
     setZoomDays(rowLimit);
     setPanOffset(0);
-  }, [selectedSchemeCode, rowLimit]);
-
-  const setZoomPreset = (days: number) => {
-    setZoomDays(Math.min(rowLimit, days));
-    setPanOffset(0);
-  };
-
-  const resetZoom = () => {
-    setZoomDays(rowLimit);
-    setPanOffset(0);
-  };
+  }, [selectedFund?.schemeCode, rowLimit]);
 
   const metrics = useMemo(() => {
-    if (!selectedFund || granularRows.length === 0) return null;
+    if (granularRows.length === 0) return null;
     const navs = granularRows.map(r => r.closingNav);
-    const deltas = granularRows.map(r => r.delta);
+    const traded = granularRows.filter(r => !r.isCarried);
+    const deltas = traded.map(r => r.deltaPercent);
     return {
       maxNav: Math.max(...navs),
       minNav: Math.min(...navs),
-      maxDelta: Math.max(...deltas),
-      totalRecords: granularRows.length
+      bestDay: deltas.length ? Math.max(...deltas) : null,
+      worstDay: deltas.length ? Math.min(...deltas) : null
     };
-  }, [selectedFund, granularRows]);
+  }, [granularRows]);
+
+  const calcResult = useMemo(() => {
+    if (!selectedFund || !calcFrom || !calcTo) return null;
+    const from = parseISODate(calcFrom);
+    const to = parseISODate(calcTo);
+    if (isNaN(from.getTime()) || isNaN(to.getTime()) || from >= to || !(calcAmount > 0)) return null;
+    if (calcMode === 'lumpsum') {
+      const r = returnBetween(selectedFund.historyAsc, endOfDay(from), endOfDay(to));
+      if (!r) return null;
+      const value = calcAmount * (r.endNav / r.startNav);
+      return { kind: 'lumpsum' as const, invested: calcAmount, value, gain: value - calcAmount, abs: r.absolute, ann: r.annualised, days: r.days, start: r.startDate, end: r.endDate, startNav: r.startNav, endNav: r.endNav };
+    }
+    const sip = simulateSip(selectedFund.historyAsc, from.getTime(), endOfDay(to), calcAmount);
+    if (!sip) return null;
+    return { kind: 'sip' as const, ...sip };
+  }, [selectedFund, calcMode, calcAmount, calcFrom, calcTo]);
+
+  const exportCSV = () => {
+    if (!selectedFund) return;
+    downloadCSV(`${selectedFund.schemeCode}_daily_${rowLimit}d.csv`, [
+      ['Date', 'NAV', 'Previous NAV', 'Change', 'Change %', 'Carried forward', '7D ann %', '15D ann %', '30D ann %'],
+      ...granularRows.map(r => [r.iso, r.closingNav, r.openingNav, r.delta, r.deltaPercent, r.isCarried ? 'yes' : 'no', r.rollingReturn7dAnn, r.rollingReturn15dAnn, r.rollingReturn30dAnn])
+    ]);
+  };
+
+  const Stat = ({ label, value, cls, color }: { label: string; value: string; cls?: string; color?: string }) => (
+    <div className="card-panel stat-card">
+      <div className="stat-label">{label}</div>
+      <div className={`stat-value ${cls || ''}`} style={{ color, fontSize: '1.15rem' }}>{value}</div>
+    </div>
+  );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {/* Page Header */}
-      <div className="card-panel" style={{ borderLeft: '4px solid var(--color-purple)', background: 'linear-gradient(90deg, #f5f3ff 0%, #ffffff 100%)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div className="card-panel page-hero" style={{ borderLeft: '4px solid var(--color-purple)', background: 'linear-gradient(90deg, #f5f3ff 0%, #ffffff 100%)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>
           <Sparkles size={12} />
-          <span>AMC Analytics View</span>
+          <span>Fund Deep-Dive</span>
         </div>
-        <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '4px', color: 'var(--text-primary)' }}>AMC Individual Analytics & Annualized Rolling Returns</h2>
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-          Compare daily opening and closing NAV movements alongside 7D, 15D, and 30D annualized rolling returns (% p.a.).
-        </p>
+        <h2>AMC Individual Analytics & Rolling Returns</h2>
+        <p>Daily NAV movement, 7/15/30-day rolling returns (simple annualised, % p.a.), risk statistics and a returns calculator for one scheme.</p>
       </div>
 
-      {/* Selector */}
-      <div className="card-panel flex-row-responsive" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap', padding: '16px 24px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Building2 size={20} style={{ color: 'var(--color-purple)' }} />
-          <div>
-            <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: '2px' }}>
-              Choose Scheme ({pinnedFunds.length} Pinned):
-            </label>
+      <div className="card-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap', padding: '14px 18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: '1 1 320px', minWidth: 0 }}>
+          <Building2 size={20} style={{ color: 'var(--color-purple)', flexShrink: 0 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <label className="field-label" htmlFor="scheme-select">Choose Scheme ({pinnedFunds.length} pinned)</label>
             <select
-              value={selectedSchemeCode || ''}
+              id="scheme-select"
+              value={selectedFund?.schemeCode || ''}
               onChange={e => setSelectedSchemeCode(Number(e.target.value))}
               className="date-picker-input"
-              style={{ minWidth: '280px', fontWeight: 600, fontSize: '0.82rem' }}
+              style={{ width: '100%', fontWeight: 600, fontSize: '0.82rem' }}
             >
               {pinnedFunds.map(fund => (
-                <option key={fund.schemeCode} value={fund.schemeCode}>
-                  {fund.amc} - {fund.schemeName}
-                </option>
+                <option key={fund.schemeCode} value={fund.schemeCode}>{fund.schemeName}</option>
               ))}
             </select>
           </div>
         </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Display Rows:</span>
-          {[30, 60, 90, 180].map(limit => (
-            <button
-              key={limit}
-              onClick={() => setRowLimit(limit)}
-              className="btn btn-outline"
-              style={{
-                padding: '6px 12px',
-                fontSize: '0.72rem',
-                backgroundColor: rowLimit === limit ? 'var(--color-purple)' : '#ffffff',
-                color: rowLimit === limit ? '#ffffff' : 'var(--text-primary)',
-                borderColor: rowLimit === limit ? 'var(--color-purple)' : 'var(--border-light)'
-              }}
-            >
-              {limit} Days
-            </button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Days:</span>
+          <div className="segmented">
+            {[30, 60, 90, 180, 365].map(l => (
+              <button key={l} className={rowLimit === l ? 'active' : ''} onClick={() => setRowLimit(l)}>{l}</button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {!selectedFund ? (
+      {isLoading ? (
+        <div className="card-panel"><div className="skeleton" style={{ height: 200 }} /></div>
+      ) : !selectedFund ? (
         <div className="card-panel" style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
           <BarChart3 size={40} style={{ margin: '0 auto 12px', color: 'var(--border-medium)' }} />
-          <h3>No AMC Selected</h3>
-          <p style={{ fontSize: '0.8rem', marginTop: '4px' }}>Pin mutual funds in page 1 to examine individual daily details.</p>
+          <h3>No Scheme Selected</h3>
+          <p style={{ fontSize: '0.8rem', marginTop: '4px' }}>Pin mutual funds to examine their daily details.</p>
         </div>
       ) : (
         <>
-          {/* Metrics */}
-          {metrics && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
-              <div className="card-panel" style={{ padding: '16px' }}>
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Highest NAV</span>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--color-success)', marginTop: '4px' }}>₹{metrics.maxNav.toFixed(4)}</div>
-              </div>
-              <div className="card-panel" style={{ padding: '16px' }}>
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Lowest NAV</span>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--color-danger)', marginTop: '4px' }}>₹{metrics.minNav.toFixed(4)}</div>
-              </div>
-              <div className="card-panel" style={{ padding: '16px' }}>
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Max Daily Gain</span>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--color-success)', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <ArrowUpRight size={16} /> +₹{metrics.maxDelta.toFixed(4)}
-                </div>
-              </div>
-              <div className="card-panel" style={{ padding: '16px' }}>
-                <span style={{ fontSize: '0.7rem', color: 'var(--color-primary)', fontWeight: 700, textTransform: 'uppercase' }}>7D Return (Ann)</span>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: '4px' }}>
-                  {selectedFund.return7dAnn >= 0 ? '+' : ''}{selectedFund.return7dAnn.toFixed(2)}% p.a.
-                </div>
-              </div>
-              <div className="card-panel" style={{ padding: '16px' }}>
-                <span style={{ fontSize: '0.7rem', color: 'var(--color-warning)', fontWeight: 700, textTransform: 'uppercase' }}>15D Return (Ann)</span>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--color-warning)', marginTop: '4px' }}>
-                  {selectedFund.return15dAnn >= 0 ? '+' : ''}{selectedFund.return15dAnn.toFixed(2)}% p.a.
-                </div>
-              </div>
-              <div className="card-panel" style={{ padding: '16px' }}>
-                <span style={{ fontSize: '0.7rem', color: 'var(--color-success)', fontWeight: 700, textTransform: 'uppercase' }}>30D Return (Ann)</span>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--color-success)', marginTop: '4px' }}>
-                  {selectedFund.return30dAnn >= 0 ? '+' : ''}{selectedFund.return30dAnn.toFixed(2)}% p.a.
-                </div>
-              </div>
-            </div>
-          )}
+          <div className="card-panel" style={{ padding: '14px 18px', display: 'flex', flexWrap: 'wrap', gap: '6px 18px', fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+            <span><strong>AMC:</strong> {selectedFund.amc}</span>
+            <span><strong>Category:</strong> {selectedFund.category}</span>
+            <span><strong>ISIN:</strong> <span className="font-mono">{selectedFund.isin}</span></span>
+            <span><strong>Code:</strong> <span className="font-mono">{selectedFund.schemeCode}</span></span>
+            <span><strong>History from:</strong> {selectedFund.launchDate}</span>
+          </div>
 
-          {/* Recharts chart */}
+          <div className="stat-grid">
+            <Stat label={`Latest NAV (${selectedFund.navAsOf})`} value={fmtNav(selectedFund.latestNav)} color="var(--text-primary)" />
+            <Stat label="1-Day Change" value={fmtPct(selectedFund.dayChangePct)} cls={pctClass(selectedFund.dayChangePct)} />
+            <Stat label="7D (ann.)" value={fmtPct(selectedFund.return7dAnn)} cls={pctClass(selectedFund.return7dAnn)} />
+            <Stat label="15D (ann.)" value={fmtPct(selectedFund.return15dAnn)} cls={pctClass(selectedFund.return15dAnn)} />
+            <Stat label="30D (ann.)" value={fmtPct(selectedFund.return30dAnn)} cls={pctClass(selectedFund.return30dAnn)} />
+            <Stat label="3 Months" value={fmtPct(selectedFund.return3m)} cls={pctClass(selectedFund.return3m)} />
+            <Stat label="6 Months" value={fmtPct(selectedFund.return6m)} cls={pctClass(selectedFund.return6m)} />
+            <Stat label="1 Year" value={fmtPct(selectedFund.return1y)} cls={pctClass(selectedFund.return1y)} />
+            <Stat label="3Y CAGR" value={fmtPct(selectedFund.return3y)} cls={pctClass(selectedFund.return3y)} />
+            <Stat label="5Y CAGR" value={fmtPct(selectedFund.return5y)} cls={pctClass(selectedFund.return5y)} />
+            <Stat label="Since Start CAGR" value={fmtPct(selectedFund.returnSinceStart)} cls={pctClass(selectedFund.returnSinceStart)} />
+            <Stat label="Volatility (1Y, ann.)" value={fmtPct(selectedFund.volatility1y, 2, false)} color="var(--color-warning)" />
+            <Stat label="Max Drawdown (1Y)" value={fmtPct(selectedFund.maxDrawdown1y, 2, false)} cls={selectedFund.maxDrawdown1y ? 'val-negative' : ''} />
+            {metrics && <Stat label={`High / Low (${rowLimit}d)`} value={`${fmtNav(metrics.maxNav, 2)} / ${fmtNav(metrics.minNav, 2)}`} color="var(--text-primary)" />}
+            {metrics && <Stat label={`Best / Worst day (${rowLimit}d)`} value={`${fmtPct(metrics.bestDay)} / ${fmtPct(metrics.worstDay)}`} color="var(--text-primary)" />}
+          </div>
+
+          {/* Chart */}
           <div className="card-panel">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
-              <h3 className="card-title" style={{ margin: 0 }}>Annualized Rolling Returns (% p.a.) & Historical NAV</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
+              <h3 className="card-title" style={{ margin: 0 }}>NAV & Rolling Returns (% p.a.)</h3>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
-                  <input
-                    type="checkbox"
-                    checked={magnifyDifferences}
-                    onChange={(e) => setMagnifyDifferences(e.target.checked)}
-                    style={{ accentColor: 'var(--color-purple)', cursor: 'pointer', width: '14px', height: '14px' }}
-                  />
-                  <span>Magnify Small Differences (Auto-Scale Y-Axis)</span>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={magnify} onChange={e => setMagnify(e.target.checked)} style={{ accentColor: 'var(--color-purple)' }} />
+                  Auto-scale returns axis
                 </label>
-                <span style={{ height: '16px', width: '1px', backgroundColor: 'var(--border-light)' }} />
-                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Zoom visible:</span>
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  <button
-                    onClick={() => setZoomPreset(7)}
-                    className="btn btn-outline"
-                    style={{ padding: '4px 8px', fontSize: '0.7rem', height: '26px' }}
-                  >
-                    7D
-                  </button>
-                  <button
-                    onClick={() => setZoomPreset(15)}
-                    className="btn btn-outline"
-                    style={{ padding: '4px 8px', fontSize: '0.7rem', height: '26px' }}
-                  >
-                    15D
-                  </button>
-                  <button
-                    onClick={() => setZoomPreset(30)}
-                    className="btn btn-outline"
-                    style={{ padding: '4px 8px', fontSize: '0.7rem', height: '26px' }}
-                  >
-                    30D
-                  </button>
-                  <button
-                    onClick={resetZoom}
-                    className="btn btn-outline"
-                    style={{ padding: '4px 8px', fontSize: '0.7rem', height: '26px', backgroundColor: 'var(--color-purple-light)', borderColor: 'var(--accent-purple-border)' }}
-                  >
-                    Reset
-                  </button>
+                <div className="segmented">
+                  {[7, 15, 30].map(d => (
+                    <button key={d} className={zoomDays === Math.min(rowLimit, d) ? 'active' : ''} onClick={() => { setZoomDays(Math.min(rowLimit, d)); setPanOffset(0); }}>{d}D</button>
+                  ))}
+                  <button className={zoomDays === rowLimit ? 'active' : ''} onClick={() => { setZoomDays(rowLimit); setPanOffset(0); }}>All</button>
                 </div>
               </div>
             </div>
-            <div style={{ height: '360px', width: '100%' }}>
+            <div className="chart-box" style={{ height: 340 }}>
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={interpolatedChartData} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
+                <ComposedChart data={sliced} margin={{ top: 10, right: 4, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis
-                    dataKey="date"
-                    stroke="#94a3b8"
-                    tick={{ fill: '#64748b', fontSize: 11 }}
-                    tickFormatter={v => (typeof v === 'string' && v.includes('\u200B') ? '' : v)}
-                  />
-                  <YAxis yAxisId="left" stroke="#7c3aed" tick={{ fill: '#7c3aed', fontSize: 11 }} domain={['auto', 'auto']} tickFormatter={v => `₹${v}`} />
+                  <XAxis dataKey="date" stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} minTickGap={20} />
+                  <YAxis yAxisId="left" stroke="#7c3aed" tick={{ fill: '#7c3aed', fontSize: 10 }} domain={['auto', 'auto']} width={56} tickFormatter={v => `₹${Number(v) >= 1000 ? Math.round(v) : Number(v).toFixed(2)}`} />
                   <YAxis
                     yAxisId="right"
                     orientation="right"
                     stroke="#059669"
-                    tick={{ fill: '#059669', fontSize: 11 }}
-                    tickFormatter={v => `${v}%`}
-                    domain={magnifyDifferences ? ['auto', 'auto'] : [(dataMin: number) => Math.min(0, dataMin), (dataMax: number) => Math.max(10, dataMax)]}
+                    tick={{ fill: '#059669', fontSize: 10 }}
+                    width={44}
+                    tickFormatter={v => `${Number(v).toFixed(1)}%`}
+                    domain={magnify ? ['auto', 'auto'] : [(min: number) => Math.min(0, min), (max: number) => Math.max(10, max)]}
                   />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1', borderRadius: '8px', fontSize: '12px' }}
-                    cursor={{ stroke: '#cbd5e1', strokeWidth: 1.5, strokeDasharray: '4 4' }}
-                    labelFormatter={v => (typeof v === 'string' ? v.replace(/\u200B/g, '') : v)}
+                    labelFormatter={(_, p) => (p?.[0]?.payload?.fullDate as string) || ''}
+                    formatter={(v: any, name: any) => [name === 'NAV (₹)' ? fmtNav(v) : `${Number(v).toFixed(2)}%`, name]}
                   />
-                  <Legend wrapperStyle={{ paddingTop: '10px', fontSize: '12px' }} />
-                  <Line yAxisId="left" type="monotone" dataKey="NAV" stroke="#7c3aed" strokeWidth={2.5} dot={false} name="NAV (₹)" isAnimationActive={false} activeDot={{ r: 6 }} />
-                  <Line yAxisId="right" type="monotone" dataKey="7D Return (% p.a.)" stroke="#2563eb" strokeWidth={1.5} dot={false} name="7D Ann (% p.a.)" isAnimationActive={false} activeDot={{ r: 5 }} />
-                  <Line yAxisId="right" type="monotone" dataKey="15D Return (% p.a.)" stroke="#d97706" strokeWidth={1.5} dot={false} name="15D Ann (% p.a.)" isAnimationActive={false} activeDot={{ r: 5 }} />
-                  <Line yAxisId="right" type="monotone" dataKey="30D Return (% p.a.)" stroke="#059669" strokeWidth={2} dot={false} name="30D Ann (% p.a.)" isAnimationActive={false} activeDot={{ r: 6 }} />
+                  <Legend wrapperStyle={{ paddingTop: '8px', fontSize: '11px' }} />
+                  <Line yAxisId="left" type="monotone" dataKey="NAV" stroke="#7c3aed" strokeWidth={2.5} dot={false} name="NAV (₹)" isAnimationActive={false} />
+                  <Line yAxisId="right" type="monotone" dataKey="r7" stroke="#2563eb" strokeWidth={1.5} dot={false} name="7D % p.a." isAnimationActive={false} connectNulls />
+                  <Line yAxisId="right" type="monotone" dataKey="r15" stroke="#d97706" strokeWidth={1.5} dot={false} name="15D % p.a." isAnimationActive={false} connectNulls />
+                  <Line yAxisId="right" type="monotone" dataKey="r30" stroke="#059669" strokeWidth={2} dot={false} name="30D % p.a." isAnimationActive={false} connectNulls />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
-
-            {/* Custom Zoom & Pan Sliders */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px', padding: '12px 18px', backgroundColor: '#f8fafc', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-md)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', fontFamily: 'var(--font-heading)', letterSpacing: '0.02em' }}>🔧 Chart Zoom & Scroll Controls</span>
-                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Zoom in on short intervals to view minor variations</span>
-              </div>
-              
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
-                {/* Zoom Slider */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 600 }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Zoom Window: {zoomDays} Days</span>
-                    <span style={{ color: 'var(--text-muted)' }}>{zoomDays === rowLimit ? 'Show All' : 'Zoomed'}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="5"
-                    max={rowLimit}
-                    value={zoomDays}
-                    onChange={(e) => {
-                      const val = Number(e.target.value);
-                      setZoomDays(val);
-                      // Ensure pan offset is in bounds
-                      setPanOffset(prev => Math.min(prev, rowLimit - val));
-                    }}
-                    style={{ width: '100%', accentColor: 'var(--color-purple)', cursor: 'pointer' }}
-                  />
+            {rowLimit > zoomDays && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                  <span>Scroll back in time</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{panOffset === 0 ? 'Latest' : `${panOffset} days back`}</span>
                 </div>
-                
-                {/* Pan Slider */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 600 }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>Scroll / Pan Timeframe</span>
-                    <span style={{ color: 'var(--text-muted)' }}>{panOffset === 0 ? 'Latest' : `${panOffset} Days Ago`}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max={rowLimit - zoomDays}
-                    value={panOffset}
-                    onChange={(e) => setPanOffset(Number(e.target.value))}
-                    disabled={rowLimit === zoomDays}
-                    style={{ width: '100%', accentColor: 'var(--color-purple)', cursor: 'pointer', opacity: rowLimit === zoomDays ? 0.4 : 1 }}
-                  />
-                </div>
+                <input type="range" min={0} max={Math.max(0, chartData.length - zoomDays)} value={panOffset} onChange={e => setPanOffset(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-purple)' }} />
               </div>
-            </div>
+            )}
           </div>
 
-          {/* Granular Table */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <h4 style={{ fontSize: '0.9rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Activity size={16} style={{ color: 'var(--color-purple)' }} />
-              Granular NAV & Annualized Return Breakdown Table
-            </h4>
+          {/* Calculator */}
+          <div className="card-panel" style={{ borderTop: '3px solid var(--color-primary)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+              <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
+                <Calculator size={18} style={{ color: 'var(--color-primary)' }} /> Returns Calculator
+              </h3>
+              <div className="segmented">
+                <button className={calcMode === 'lumpsum' ? 'active' : ''} onClick={() => setCalcMode('lumpsum')}>Lumpsum</button>
+                <button className={calcMode === 'sip' ? 'active' : ''} onClick={() => setCalcMode('sip')}>Monthly SIP</button>
+              </div>
+            </div>
+            <div className="calc-grid">
+              <div>
+                <label className="field-label" htmlFor="calc-amt">{calcMode === 'sip' ? 'Monthly amount (₹)' : 'Amount (₹)'}</label>
+                <input id="calc-amt" type="number" inputMode="numeric" min={1} className="input-text" style={{ width: '100%' }} value={calcAmount} onChange={e => setCalcAmount(Number(e.target.value))} />
+              </div>
+              <div>
+                <label className="field-label" htmlFor="calc-from">From</label>
+                <input id="calc-from" type="date" className="input-text" style={{ width: '100%' }} value={calcFrom} max={calcTo} onChange={e => setCalcFrom(e.target.value)} />
+              </div>
+              <div>
+                <label className="field-label" htmlFor="calc-to">To</label>
+                <input id="calc-to" type="date" className="input-text" style={{ width: '100%' }} value={calcTo} min={calcFrom} onChange={e => setCalcTo(e.target.value)} />
+              </div>
+            </div>
+            {calcResult ? (
+              <div className="stat-grid" style={{ marginTop: 14 }}>
+                <div className="stat-card" style={{ background: '#f8fafc', borderRadius: 10 }}>
+                  <div className="stat-label">Invested</div>
+                  <div className="stat-value" style={{ fontSize: '1.1rem' }}>{fmtINR(calcResult.invested)}</div>
+                  {calcResult.kind === 'sip' && <div className="stat-sub">{calcResult.installments} instalments</div>}
+                </div>
+                <div className="stat-card" style={{ background: '#f8fafc', borderRadius: 10 }}>
+                  <div className="stat-label">Value on {formatDateDisplay(calcResult.kind === 'sip' ? calcResult.valueDate : calcResult.end)}</div>
+                  <div className="stat-value" style={{ fontSize: '1.1rem' }}>{fmtINR(calcResult.kind === 'sip' ? calcResult.currentValue : calcResult.value)}</div>
+                </div>
+                <div className="stat-card" style={{ background: '#f8fafc', borderRadius: 10 }}>
+                  <div className="stat-label">Gain</div>
+                  <div className={`stat-value ${pctClass(calcResult.gain)}`} style={{ fontSize: '1.1rem' }}>{fmtINR(calcResult.gain)}</div>
+                  <div className="stat-sub">{fmtPct(calcResult.kind === 'sip' ? calcResult.absoluteReturn : calcResult.abs)} absolute</div>
+                </div>
+                <div className="stat-card" style={{ background: '#f8fafc', borderRadius: 10 }}>
+                  <div className="stat-label">{calcResult.kind === 'sip' ? 'XIRR' : calcResult.days >= 365 ? 'CAGR' : 'Annualised (simple)'}</div>
+                  <div className={`stat-value ${pctClass(calcResult.kind === 'sip' ? calcResult.xirr : calcResult.ann)}`} style={{ fontSize: '1.1rem' }}>
+                    {fmtPct(calcResult.kind === 'sip' ? calcResult.xirr : calcResult.ann)}
+                  </div>
+                  {calcResult.kind === 'lumpsum' && (
+                    <div className="stat-sub">
+                      {fmtNav(calcResult.startNav)} ({formatDateDisplay(calcResult.start)}) → {fmtNav(calcResult.endNav)}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 12 }}>
+                Pick a valid date range within the fund's history ({selectedFund.launchDate} – {selectedFund.navAsOf}). SIP needs at least two monthly instalments.
+              </p>
+            )}
+            <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 10 }}>Uses published NAVs only; ignores exit load, stamp duty and taxes.</p>
+          </div>
 
+          {/* Table */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <h4 style={{ fontSize: '0.9rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Activity size={16} style={{ color: 'var(--color-purple)' }} />
+                Daily NAV & Rolling Return Table
+              </h4>
+              <button className="btn btn-outline" onClick={exportCSV} style={{ padding: '6px 10px', fontSize: '0.74rem' }}>
+                <Download size={14} /> CSV
+              </button>
+            </div>
             <div className="table-wrapper">
               <table className="financial-table">
                 <thead>
                   <tr>
-                    <th>Fund Name</th>
                     <th>Date</th>
                     <th style={{ textAlign: 'right' }}>NAV (₹)</th>
-                    <th style={{ textAlign: 'right' }}>Opening NAV</th>
-                    <th style={{ textAlign: 'right' }}>Closing NAV</th>
-                    <th style={{ textAlign: 'right' }}>Delta (₹)</th>
-                    <th style={{ textAlign: 'right' }}>Delta %</th>
-                    <th style={{ textAlign: 'right' }}>7D Return (Ann p.a.)</th>
-                    <th style={{ textAlign: 'right' }}>15D Return (Ann p.a.)</th>
-                    <th style={{ textAlign: 'right' }}>30D Return (Ann p.a.)</th>
+                    <th style={{ textAlign: 'right' }}>Prev. NAV</th>
+                    <th style={{ textAlign: 'right' }}>Change (₹)</th>
+                    <th style={{ textAlign: 'right' }}>Change %</th>
+                    <th style={{ textAlign: 'right' }}>7D % p.a.</th>
+                    <th style={{ textAlign: 'right' }}>15D % p.a.</th>
+                    <th style={{ textAlign: 'right' }}>30D % p.a.</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {granularRows.map(row => {
-                    const isPos = row.delta >= 0;
-                    return (
-                      <tr key={row.id}>
-                        <td style={{ fontWeight: 600, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '200px' }}>{row.fundName}</td>
-                        <td className="font-mono" style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-purple)' }}>{row.date}</td>
-                        <td style={{ textAlign: 'right', fontWeight: 700 }}>₹{row.closingNav.toFixed(4)}</td>
-                        <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>₹{row.openingNav.toFixed(4)}</td>
-                        <td style={{ textAlign: 'right' }}>₹{row.closingNav.toFixed(4)}</td>
-                        <td style={{ textAlign: 'right' }} className={isPos ? 'val-positive' : 'val-negative'}>
-                          {isPos ? '+' : ''}{row.delta.toFixed(4)}
-                        </td>
-                        <td style={{ textAlign: 'right' }} className={isPos ? 'val-positive' : 'val-negative'}>
-                          {isPos ? '+' : ''}{row.deltaPercent.toFixed(3)}%
-                        </td>
-
-                        {/* 7D Annualized Return */}
-                        <td style={{ textAlign: 'right', color: 'var(--color-primary)', fontWeight: 600 }}>
-                          {row.rollingReturn7dAnn !== null ? `${row.rollingReturn7dAnn > 0 ? '+' : ''}${row.rollingReturn7dAnn.toFixed(2)}%` : '-'}
-                        </td>
-
-                        {/* 15D Annualized Return */}
-                        <td style={{ textAlign: 'right', color: 'var(--color-warning)', fontWeight: 600 }}>
-                          {row.rollingReturn15dAnn !== null ? `${row.rollingReturn15dAnn > 0 ? '+' : ''}${row.rollingReturn15dAnn.toFixed(2)}%` : '-'}
-                        </td>
-
-                        {/* 30D Annualized Return */}
-                        <td style={{ textAlign: 'right', color: 'var(--color-success)', fontWeight: 700 }}>
-                          {row.rollingReturn30dAnn !== null ? `${row.rollingReturn30dAnn > 0 ? '+' : ''}${row.rollingReturn30dAnn.toFixed(2)}%` : '-'}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {granularRows.map(row => (
+                    <tr key={row.id} className={row.isCarried ? 'row-carried' : ''}>
+                      <td className="font-mono" style={{ fontSize: '0.74rem', fontWeight: 600, color: row.isCarried ? undefined : 'var(--color-purple)' }}>
+                        {row.date}
+                        {row.isCarried && <span className="carried-tag" title="No NAV published — previous NAV carried forward">no NAV</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtNav(row.closingNav)}</td>
+                      <td style={{ textAlign: 'right' }}>{fmtNav(row.openingNav)}</td>
+                      <td style={{ textAlign: 'right' }} className={row.isCarried ? '' : pctClass(row.delta)}>
+                        {row.delta > 0 ? '+' : ''}{row.delta.toFixed(4)}
+                      </td>
+                      <td style={{ textAlign: 'right' }} className={row.isCarried ? '' : pctClass(row.deltaPercent)}>{fmtPct(row.deltaPercent, 3)}</td>
+                      <td style={{ textAlign: 'right' }} className={pctClass(row.rollingReturn7dAnn)}>{fmtPct(row.rollingReturn7dAnn)}</td>
+                      <td style={{ textAlign: 'right' }} className={pctClass(row.rollingReturn15dAnn)}>{fmtPct(row.rollingReturn15dAnn)}</td>
+                      <td style={{ textAlign: 'right' }} className={pctClass(row.rollingReturn30dAnn)}>{fmtPct(row.rollingReturn30dAnn)}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -433,4 +353,3 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({
     </div>
   );
 };
-
