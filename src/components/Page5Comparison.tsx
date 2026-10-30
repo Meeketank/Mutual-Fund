@@ -2,8 +2,9 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Sparkles, X, Search, RefreshCw, Eye, EyeOff, Calendar, Percent, TrendingUp, Plus } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { PinnedFund, MFSearchResult } from '../types/mf';
-import { fetchFundDetail, searchSchemes, formatDateDisplay, formatDateShort } from '../services/amfiApi';
-import { endOfDay, parseISODate, periodReturn, shiftISODate, simulateSip, todayISO, returnBetween } from '../services/calc';
+import { fetchFundDetail, searchSchemes, formatDateDisplay } from '../services/amfiApi';
+import { endOfDay, parseISODate, shiftISODate, simulateSip, todayISO, returnBetween, alignSeries, carriedKey, valueKey, timeTicks, AlignedRow } from '../services/calc';
+import { realDot, timeTickFormatter } from './chartParts';
 import { fmtNav, fmtPct, fmtINR, pctClass, shortName } from '../services/format';
 
 // Portfolio / holdings data is intentionally not shown: mfapi.in only exposes
@@ -104,39 +105,26 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
   const filled = selectedFunds.map((f, i) => ({ f, i })).filter(x => !!x.f);
   const colorFor = (slot: number) => COLORS[slot % COLORS.length];
 
-  const chartData = useMemo(() => {
+  const chartData = useMemo<AlignedRow[]>(() => {
     if (!validRange) return [];
-    const active = selectedFunds.map((f, i) => ({ f, i })).filter(x => x.f && visibleFunds[x.f.schemeCode] !== false);
+    const active = selectedFunds.filter(f => f && visibleFunds[f.schemeCode] !== false);
     if (active.length === 0) return [];
-    const map = new Map<number, { t: number; [k: string]: number }>();
     const days = comparisonMetric === '7D' ? 7 : comparisonMetric === '15D' ? 15 : 30;
-    active.forEach(({ f }) => {
-      const asc = f.historyAsc;
-      const pts = asc.filter(p => {
-        const t = p.parsedDate.getTime();
-        return t >= startT && t <= endT;
-      });
-      if (pts.length === 0) return;
-      const base = pts[0].nav;
-      pts.forEach(p => {
-        const t = p.parsedDate.getTime();
-        let v: number | null;
-        if (comparisonMetric === 'NAV') v = (p.nav / base) * 100;
-        else v = periodReturn(asc, endOfDay(p.parsedDate), days)?.annualised ?? null; // full history used for look-back
-        if (v === null) return;
-        let row = map.get(t);
-        if (!row) {
-          row = { t };
-          map.set(t, row);
-        }
-        row[key(f.schemeCode)] = Math.round(v * 10000) / 10000;
-      });
-    });
-    return Array.from(map.values()).sort((a, b) => a.t - b.t);
+    // Shared date grid across funds; a fund with no NAV on a date (weekend for
+    // equity funds, holidays) uses its last published NAV, so lines never break.
+    // Rolling returns look back over the full history, not just the visible range.
+    return alignSeries(
+      active.map(f => ({ key: key(f.schemeCode), asc: f.historyAsc })),
+      startT,
+      endT,
+      comparisonMetric === 'NAV' ? 'rebased' : 'rolling',
+      days
+    );
   }, [selectedFunds, visibleFunds, comparisonMetric, startT, endT, validRange]);
 
   const spanDays = chartData.length > 1 ? (chartData[chartData.length - 1].t - chartData[0].t) / 86400000 : 0;
-  const nameByKey = Object.fromEntries(filled.map(({ f }) => [key(f.schemeCode), f.schemeName]));
+  const xTicks = chartData.length ? timeTicks(chartData[0].t, chartData[chartData.length - 1].t, 6) : [];
+  const showDots = chartData.length > 0 && chartData.length <= 45;
 
   const slotIndices = Array.from({ length: Math.max(3, slotCount, selectedFunds.length) }, (_, i) => i);
 
@@ -308,7 +296,7 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
               <TrendingUp size={18} style={{ color: 'var(--color-primary)' }} /> Comparison Chart
             </h3>
             <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-              {comparisonMetric === 'NAV' ? 'NAV rebased to 100 at the start of the range.' : `Rolling ${comparisonMetric} return on each date, simple annualised (% p.a.).`}
+              {comparisonMetric === 'NAV' ? 'NAV rebased to 100 on the range start date.' : `Rolling ${comparisonMetric} return on each date, simple annualised (% p.a.).`} * in the tooltip = no NAV that day, previous NAV used.
             </p>
           </div>
           <div className="segmented">
@@ -347,25 +335,33 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis
-                  dataKey="t"
-                  stroke="#94a3b8"
-                  tick={{ fill: '#64748b', fontSize: 10 }}
-                  minTickGap={28}
-                  tickFormatter={t => {
-                    const d = new Date(t);
-                    return spanDays > 400 ? `${formatDateShort(d).slice(3)} ${String(d.getFullYear()).slice(2)}` : formatDateShort(d);
-                  }}
-                />
+                <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={timeTickFormatter(spanDays)} />
                 <YAxis stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} domain={['auto', 'auto']} width={46} tickFormatter={v => (comparisonMetric === 'NAV' ? Number(v).toFixed(0) : `${Number(v).toFixed(1)}%`)} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1', borderRadius: '8px', fontSize: '12px', maxWidth: 320, whiteSpace: 'normal' }}
-                  labelFormatter={t => formatDateDisplay(new Date(t as number))}
-                  formatter={(v: any, k: any) => [comparisonMetric === 'NAV' ? `${Number(v).toFixed(2)} (${fmtPct(Number(v) - 100)})` : `${Number(v).toFixed(2)}%`, shortName(nameByKey[k] || String(k), 40)]}
+                  content={({ active, payload }) => {
+                    const row = payload?.[0]?.payload as AlignedRow | undefined;
+                    if (!active || !row) return null;
+                    const items = filled
+                      .filter(({ f }) => visibleFunds[f.schemeCode] !== false)
+                      .map(({ f, i }) => ({ f, i, v: row[valueKey(key(f.schemeCode))], c: !!row[carriedKey(key(f.schemeCode))] }))
+                      .filter(x => typeof x.v === 'number') as { f: PinnedFund; i: number; v: number; c: boolean }[];
+                    return (
+                      <div style={{ background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px', fontSize: 12, maxWidth: 300, boxShadow: 'var(--shadow-md)' }}>
+                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{formatDateDisplay(new Date(row.t))}</div>
+                        {items.map(({ f, i, v, c }) => (
+                          <div key={f.schemeCode} style={{ display: 'flex', gap: 6, alignItems: 'center', color: colorFor(i) }}>
+                            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shortName(f.schemeName, 30)}</span>
+                            <strong>{comparisonMetric === 'NAV' ? `${v.toFixed(2)} (${fmtPct(v - 100)})` : `${v.toFixed(2)}%`}</strong>
+                            {c && <span style={{ color: '#94a3b8' }} title="No NAV this day; previous NAV used">*</span>}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  }}
                 />
                 {filled.map(({ f, i }) =>
                   visibleFunds[f.schemeCode] === false ? null : (
-                    <Line key={f.schemeCode} type="monotone" dataKey={key(f.schemeCode)} stroke={colorFor(i)} strokeWidth={2} dot={false} isAnimationActive={false} activeDot={{ r: 4 }} connectNulls />
+                    <Line key={f.schemeCode} type="monotone" dataKey={key(f.schemeCode)} stroke={colorFor(i)} strokeWidth={2} dot={showDots ? realDot(key(f.schemeCode), colorFor(i)) : false} isAnimationActive={false} activeDot={{ r: 4 }} connectNulls />
                   )
                 )}
               </LineChart>

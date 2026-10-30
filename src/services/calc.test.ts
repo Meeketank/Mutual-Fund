@@ -13,7 +13,10 @@ import {
   simulateSip,
   competitionRanks,
   endOfDay,
-  riskStats
+  riskStats,
+  alignSeries,
+  carriedKey,
+  valueKey
 } from './calc';
 
 const NOW = new Date(2026, 9, 30);
@@ -173,5 +176,42 @@ describe('risk & ranks', () => {
     ];
     const m = competitionRanks(items, i => i.v, i => i.k);
     expect([m.get(2), m.get(1), m.get(3), m.get(4)]).toEqual([1, 2, 2, 4]);
+  });
+});
+
+describe('alignSeries (chart gap handling)', () => {
+  // Liquid fund publishes every day; equity fund skips the weekend.
+  const liquid = pts([
+    ['02-01-2026', 10], ['03-01-2026', 10.01], ['04-01-2026', 10.02], ['05-01-2026', 10.03]
+  ]);
+  const equity = pts([
+    ['01-01-2026', 100], ['02-01-2026', 102], ['05-01-2026', 99]
+  ]);
+  const from = parseISODate('2026-01-02').getTime();
+  const to = endOfDay(parseISODate('2026-01-05'));
+
+  it('fills days a fund did not publish with its last NAV, flagged as carried', () => {
+    const rows = alignSeries([{ key: 'l', asc: liquid }, { key: 'e', asc: equity }], from, to, 'nav');
+    expect(rows.map(r => toISODate(new Date(r.t)))).toEqual(['2026-01-02', '2026-01-03', '2026-01-04', '2026-01-05']);
+    const sat = rows[1];
+    expect(sat[valueKey('e')]).toBe(102); // Friday NAV carried for the tooltip
+    expect(sat.e).toBeUndefined(); // ...but the line itself only passes through real NAVs
+    expect(sat[carriedKey('e')]).toBe(true);
+    expect(sat[carriedKey('l')]).toBe(false);
+    expect(rows.every(r => typeof r[valueKey('e')] === 'number' && typeof r[valueKey('l')] === 'number')).toBe(true); // no holes
+  });
+
+  it('rebases every fund from the NAV on the range start date', () => {
+    const rows = alignSeries([{ key: 'e', asc: equity }], parseISODate('2026-01-01').getTime() + 1, to, 'rebased');
+    // range starts just after 01 Jan -> base is the 01 Jan NAV (100), first plotted point 02 Jan = 102
+    expect(rows[0].e).toBeCloseTo(102, 6);
+    expect(rows[rows.length - 1][valueKey('e')]).toBeCloseTo(99, 6);
+  });
+
+  it('leaves values empty before a fund existed', () => {
+    const late = pts([['04-01-2026', 50], ['05-01-2026', 51]]);
+    const rows = alignSeries([{ key: 'l', asc: liquid }, { key: 'n', asc: late }], from, to, 'nav');
+    expect(rows[0][valueKey('n')]).toBeUndefined();
+    expect(rows[2].n).toBe(50);
   });
 });

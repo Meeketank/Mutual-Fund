@@ -15,7 +15,8 @@ npm run build
 - Returns under 1 year: absolute %, and simple annualised (`abs% × 365 / days`), the SEBI convention.
 - 1 year and above: CAGR. Day counts are real calendar days between the two NAV dates.
 - If a fund's history doesn't reach back far enough, the value shows "—" instead of a fake 0%.
-- Weekends/holidays carry forward the previous business day's NAV (shown in grey).
+- Weekends/holidays carry forward the previous business day's NAV (shown in grey in tables).
+- Charts: all funds share one date grid. Lines are drawn smoothly (monotone curve, no overshoot) through each fund's real NAV days on a true time axis; on days a fund didn't publish, tooltips show its last NAV marked `*`. No values are interpolated.
 - SIP: monthly instalment bought at the first NAV on/after each date; XIRR via Newton's method with bisection fallback.
 
 All formulas live in `src/services/calc.ts` and are covered by `src/services/calc.test.ts`.

@@ -3,7 +3,8 @@ import { Building2, Sparkles, BarChart3, Activity, Calculator, Download } from '
 import { ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
 import { PinnedFund, GranularNAVRow } from '../types/mf';
 import { generateAMCNAVRows, formatDateDisplay } from '../services/amfiApi';
-import { endOfDay, parseISODate, returnBetween, shiftISODate, simulateSip, toISODate } from '../services/calc';
+import { endOfDay, parseISODate, returnBetween, shiftISODate, simulateSip, toISODate, timeTicks } from '../services/calc';
+import { timeTickFormatter } from './chartParts';
 import { fmtNav, fmtPct, fmtINR, pctClass, downloadCSV } from '../services/format';
 
 interface Page3Props {
@@ -41,7 +42,8 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({ pinnedFunds, isLoadin
   const chartData = useMemo(
     () =>
       [...granularRows].reverse().map(r => ({
-        date: r.date.slice(0, 6),
+        t: parseISODate(r.iso).getTime(),
+        carried: r.isCarried,
         fullDate: r.date,
         NAV: r.closingNav,
         r7: r.rollingReturn7dAnn,
@@ -57,8 +59,13 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({ pinnedFunds, isLoadin
     const win = Math.min(N, zoomDays);
     const off = Math.min(N - win, panOffset);
     const start = Math.max(0, N - win - off);
-    return chartData.slice(start, start + win);
+    // Window is chosen in calendar days, but only days with a published NAV are
+    // plotted on a time axis: weekends/holidays become proportional spacing on the
+    // axis (the line runs straight across) instead of flat fake "steps".
+    return chartData.slice(start, start + win).filter(r => !r.carried);
   }, [chartData, zoomDays, panOffset]);
+  const spanDays = sliced.length > 1 ? (sliced[sliced.length - 1].t - sliced[0].t) / 86400000 : 0;
+  const xTicks = sliced.length ? timeTicks(sliced[0].t, sliced[sliced.length - 1].t, 6) : [];
 
   useEffect(() => {
     setZoomDays(rowLimit);
@@ -205,7 +212,7 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({ pinnedFunds, isLoadin
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={sliced} margin={{ top: 10, right: 4, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="date" stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} minTickGap={20} />
+                  <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} tickFormatter={timeTickFormatter(spanDays)} stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} />
                   <YAxis yAxisId="left" stroke="#7c3aed" tick={{ fill: '#7c3aed', fontSize: 10 }} domain={['auto', 'auto']} width={56} tickFormatter={v => `₹${Number(v) >= 1000 ? Math.round(v) : Number(v).toFixed(2)}`} />
                   <YAxis
                     yAxisId="right"
@@ -222,7 +229,7 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({ pinnedFunds, isLoadin
                     formatter={(v: any, name: any) => [name === 'NAV (₹)' ? fmtNav(v) : `${Number(v).toFixed(2)}%`, name]}
                   />
                   <Legend wrapperStyle={{ paddingTop: '8px', fontSize: '11px' }} />
-                  <Line yAxisId="left" type="monotone" dataKey="NAV" stroke="#7c3aed" strokeWidth={2.5} dot={false} name="NAV (₹)" isAnimationActive={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="NAV" stroke="#7c3aed" strokeWidth={2.5} dot={sliced.length <= 45 ? { r: 2.5, fill: '#7c3aed', strokeWidth: 0 } : false} name="NAV (₹)" isAnimationActive={false} />
                   <Line yAxisId="right" type="monotone" dataKey="r7" stroke="#2563eb" strokeWidth={1.5} dot={false} name="7D % p.a." isAnimationActive={false} connectNulls />
                   <Line yAxisId="right" type="monotone" dataKey="r15" stroke="#d97706" strokeWidth={1.5} dot={false} name="15D % p.a." isAnimationActive={false} connectNulls />
                   <Line yAxisId="right" type="monotone" dataKey="r30" stroke="#059669" strokeWidth={2} dot={false} name="30D % p.a." isAnimationActive={false} connectNulls />

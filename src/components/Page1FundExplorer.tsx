@@ -2,8 +2,9 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { Sparkles, Layers, Filter, ZoomOut, AlertTriangle, Crosshair, ArrowUp, ArrowDown, Download } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea } from 'recharts';
 import { PinnedFund } from '../types/mf';
-import { getNavOnDate, formatDateDisplay, formatDateShort } from '../services/amfiApi';
-import { DAY_MS, todayISO, absoluteReturnPct } from '../services/calc';
+import { getNavOnDate, formatDateDisplay } from '../services/amfiApi';
+import { DAY_MS, todayISO, absoluteReturnPct, alignSeries, carriedKey, valueKey, timeTicks, AlignedRow } from '../services/calc';
+import { realDot, timeTickFormatter } from './chartParts';
 import { fmtNav, fmtPct, pctClass, shortName, downloadCSV } from '../services/format';
 
 interface Page1Props {
@@ -16,7 +17,7 @@ interface Page1Props {
 
 interface HoveredPoint {
   label: string;
-  items: { name: string; value: number; color: string }[];
+  items: { name: string; value: number; color: string; carried: boolean }[];
 }
 
 type SortKey = 'name' | 'nav' | 'day' | 'diff' | 'r7' | 'r30' | 'r1y' | 'r3y';
@@ -89,29 +90,21 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
   // ---- Chart data ---------------------------------------------------------
   // The window is anchored on the newest NAV date across funds (not "now"),
   // so a holiday or late NAV publish never shrinks the chart.
-  const chartData = useMemo(() => {
+  const chartData = useMemo<AlignedRow[]>(() => {
     const withData = pinnedFunds.filter(f => f.historyAsc.length > 0);
     if (withData.length === 0) return [];
     const newest = Math.max(...withData.map(f => f.latestNavDate!.getTime()));
     const days = { '1M': 30, '3M': 91, '6M': 182, '1Y': 365, '3Y': 365 * 3, ALL: Infinity }[timeframe];
     const cutoff = days === Infinity ? -Infinity : newest - days * DAY_MS;
 
-    const map = new Map<number, { t: number; [k: string]: number }>();
-    withData.forEach(fund => {
-      const pts = fund.historyAsc.filter(p => p.parsedDate.getTime() >= cutoff);
-      if (pts.length === 0) return;
-      const base = pts[0].nav;
-      pts.forEach(p => {
-        const t = p.parsedDate.getTime();
-        let row = map.get(t);
-        if (!row) {
-          row = { t };
-          map.set(t, row);
-        }
-        row[key(fund.schemeCode)] = chartMode === 'rebased' ? Math.round((p.nav / base) * 100 * 10000) / 10000 : p.nav;
-      });
-    });
-    return Array.from(map.values()).sort((a, b) => a.t - b.t);
+    const from = days === Infinity ? Math.min(...withData.map(f => f.historyAsc[0].parsedDate.getTime())) : cutoff;
+    // One shared date grid; days a fund didn't publish carry its last NAV (no holes).
+    return alignSeries(
+      withData.map(f => ({ key: key(f.schemeCode), asc: f.historyAsc })),
+      from,
+      newest + DAY_MS,
+      chartMode === 'rebased' ? 'rebased' : 'nav'
+    );
   }, [pinnedFunds, timeframe, chartMode]);
 
   const fundsKey = pinnedFunds.map(f => f.schemeCode).join(',');
@@ -128,10 +121,8 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
   const isZoomed = sliderRange !== null && (sliderRange[0] > 0 || sliderRange[1] < lastIdx);
   const showDots = displayedData.length > 0 && displayedData.length <= 45;
   const spanDays = displayedData.length > 1 ? (displayedData[displayedData.length - 1].t - displayedData[0].t) / DAY_MS : 0;
-  const tickFmt = (t: number) => {
-    const d = new Date(t);
-    return spanDays > 400 ? `${formatDateShort(d).slice(3)} ${String(d.getFullYear()).slice(2)}` : formatDateShort(d);
-  };
+  const tickFmt = timeTickFormatter(spanDays);
+  const xTicks = displayedData.length ? timeTicks(displayedData[0].t, displayedData[displayedData.length - 1].t, 6) : [];
 
   const yDomain = useMemo((): [number, number] => {
     let min = Infinity;
@@ -154,7 +145,6 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
     return [min - pad, max + pad];
   }, [pinnedFunds, displayedData]);
 
-  const nameByKey = useMemo(() => Object.fromEntries(pinnedFunds.map(f => [key(f.schemeCode), f.schemeName])), [pinnedFunds]);
 
   const handleMouseDown = useCallback((e: any) => {
     if (e?.activeLabel !== undefined) setRefAreaLeft(e.activeLabel);
@@ -163,17 +153,22 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
     (e: any) => {
       if (!e || e.activeLabel === undefined) return;
       if (refAreaLeft !== null) setRefAreaRight(e.activeLabel);
-      if (Array.isArray(e.activePayload) && e.activePayload.length > 0) {
+      const row = e.activePayload?.[0]?.payload as AlignedRow | undefined;
+      if (row) {
         setHoveredPoint({
-          label: formatDateDisplay(new Date(e.activeLabel)),
-          items: e.activePayload
-            .filter((p: any) => typeof p.value === 'number')
-            .map((p: any) => ({ name: nameByKey[p.dataKey] || p.name, value: p.value, color: p.color }))
-            .sort((a: any, b: any) => b.value - a.value)
+          label: formatDateDisplay(new Date(row.t)),
+          items: pinnedFunds
+            .map(f => {
+              const k = key(f.schemeCode);
+              const v = row[valueKey(k)];
+              return typeof v === 'number' ? { name: f.schemeName, value: v, color: colorOf(f.schemeCode), carried: !!row[carriedKey(k)] } : null;
+            })
+            .filter((x): x is NonNullable<typeof x> => x !== null)
+            .sort((a, b) => b.value - a.value)
         });
       }
     },
-    [refAreaLeft, nameByKey]
+    [refAreaLeft, pinnedFunds, colorOf]
   );
   const handleMouseUp = useCallback(() => {
     if (refAreaLeft !== null && refAreaRight !== null && refAreaLeft !== refAreaRight) {
@@ -373,7 +368,7 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
           <div>
             <h3 className="card-title">Performance Comparison Chart</h3>
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              {chartMode === 'rebased' ? 'Every fund starts at 100 on the first day of the range, so lines are directly comparable.' : 'Actual published NAV values.'} Drag on the chart or use the slider to zoom.
+              {chartMode === 'rebased' ? 'Every fund starts at 100 on the same start date, so lines are directly comparable.' : 'Actual published NAV values.'} Lines run smoothly through each fund's real NAV days (dots); on weekends/holidays the hover panel shows the last NAV, marked *. Drag on the chart or use the slider to zoom.
             </p>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -414,7 +409,7 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
                   }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="t" type="category" stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={tickFmt} minTickGap={28} />
+                  <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={tickFmt} />
                   <YAxis
                     stroke="#94a3b8"
                     tick={{ fill: '#64748b', fontSize: 10 }}
@@ -432,7 +427,7 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
                       name={fund.schemeName}
                       stroke={colorOf(fund.schemeCode)}
                       strokeWidth={2}
-                      dot={showDots ? { r: 2.5, strokeWidth: 0, fill: colorOf(fund.schemeCode) } : false}
+                      dot={showDots ? realDot(key(fund.schemeCode), colorOf(fund.schemeCode)) : false}
                       activeDot={{ r: 4 }}
                       connectNulls
                       isAnimationActive={false}
@@ -457,13 +452,14 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
                         <span className="chart-hover-name" title={item.name}>{item.name}</span>
                         <span className="chart-hover-value">
                           {chartMode === 'rebased' ? `${item.value.toFixed(2)} (${fmtPct(item.value - 100)})` : fmtNav(item.value)}
+                          {item.carried && <span title="No NAV published this day; previous NAV carried forward" style={{ color: 'var(--text-muted)', fontWeight: 400 }}> *</span>}
                         </span>
                       </div>
                     ))}
                   </div>
                 </>
               ) : (
-                <div className="chart-hover-placeholder">Hover or tap the chart to see exact values for a date.</div>
+                <div className="chart-hover-placeholder">Hover or tap the chart to see exact values for a date. * = no NAV that day, previous NAV carried forward.</div>
               )}
             </div>
 

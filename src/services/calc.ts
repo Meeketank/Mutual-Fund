@@ -362,3 +362,97 @@ export function competitionRanks<T>(items: T[], value: (t: T) => number | null, 
   });
   return map;
 }
+
+// ---------------------------------------------------------------------------
+// Chart alignment
+// ---------------------------------------------------------------------------
+// Different schemes publish on different days: liquid/overnight funds publish
+// every calendar day, equity funds only on business days, and holidays differ.
+// Plotting them together naively leaves holes. Instead every series is put on
+// one shared date grid (the union of all published dates) and a missing day
+// takes the scheme's last published NAV — which is the NAV an investor would
+// actually transact at. Days before a scheme's first NAV stay empty.
+
+export interface AlignedSeriesInput {
+  key: string;
+  asc: NavPoint[];
+}
+
+export interface AlignedRow {
+  t: number;
+  [key: string]: number | boolean | undefined;
+}
+
+/** Flag column: true when the fund published no NAV on that date. */
+export const carriedKey = (key: string) => `${key}__c`;
+/** Value column including carried-forward days (for tooltips / hover panels). */
+export const valueKey = (key: string) => `${key}__v`;
+
+/**
+ * Builds rows on the union of published dates in [fromTime, toTime].
+ *
+ * row[key]           value only on days the fund really published -> the line is
+ *                    drawn through real NAVs only (use connectNulls), so it flows
+ *                    smoothly Friday -> Monday instead of showing flat weekend shelves.
+ * row[valueKey(key)] value on every date, carrying the last NAV forward -> what the
+ *                    tooltip shows for a weekend/holiday (flagged by carriedKey).
+ * mode 'nav'     -> the NAV itself
+ * mode 'rebased' -> NAV / NAV-on-range-start x 100 (same base date for all)
+ * mode 'rolling' -> rolling N-day simple annualised return ending on that date
+ */
+export function alignSeries(
+  series: AlignedSeriesInput[],
+  fromTime: number,
+  toTime: number,
+  mode: 'nav' | 'rebased' | 'rolling' = 'nav',
+  rollingDays = 30
+): AlignedRow[] {
+  const dates = new Set<number>();
+  series.forEach(s => {
+    const a = findOnOrAfter(s.asc, fromTime);
+    if (a < 0) return;
+    for (let i = a; i < s.asc.length && s.asc[i].parsedDate.getTime() <= toTime; i++) dates.add(s.asc[i].parsedDate.getTime());
+  });
+  const grid = Array.from(dates).sort((x, y) => x - y);
+  if (grid.length === 0) return [];
+
+  const rows: AlignedRow[] = grid.map(t => ({ t }));
+  series.forEach(s => {
+    if (s.asc.length === 0) return;
+    // Common base: NAV on/before the range start, else the fund's first NAV in range.
+    let baseIdx = findOnOrBefore(s.asc, fromTime);
+    if (baseIdx < 0) baseIdx = findOnOrAfter(s.asc, fromTime);
+    const base = baseIdx >= 0 ? s.asc[baseIdx].nav : NaN;
+    const ck = carriedKey(s.key);
+    let p = findOnOrBefore(s.asc, grid[0] - 1);
+    rows.forEach(row => {
+      const t = row.t;
+      while (p + 1 < s.asc.length && s.asc[p + 1].parsedDate.getTime() <= t) p++;
+      if (p < 0) return; // before this fund's first NAV
+      const pt = s.asc[p];
+      const carried = pt.parsedDate.getTime() !== t;
+      let v: number | null;
+      if (mode === 'nav') v = pt.nav;
+      else if (mode === 'rebased') v = base > 0 ? (pt.nav / base) * 100 : null;
+      else v = periodReturn(s.asc, endOfDay(new Date(t)), rollingDays)?.annualised ?? null;
+      if (v === null || !isFinite(v)) return;
+      const rounded = Math.round(v * 10000) / 10000;
+      if (!carried) row[s.key] = rounded;
+      row[valueKey(s.key)] = rounded;
+      row[ck] = carried;
+    });
+  });
+  return rows;
+}
+
+/** Evenly spaced, day-aligned ticks for a time axis. */
+export function timeTicks(min: number, max: number, count = 6): number[] {
+  if (!isFinite(min) || !isFinite(max) || max <= min) return isFinite(min) ? [min] : [];
+  const step = (max - min) / (count - 1);
+  const out: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const d = new Date(min + step * i);
+    out.push(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime());
+  }
+  return Array.from(new Set(out));
+}
