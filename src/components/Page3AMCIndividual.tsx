@@ -1,10 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Building2, Sparkles, BarChart3, Activity, Calculator, Download } from 'lucide-react';
-import { ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
+import { ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine, ReferenceDot } from 'recharts';
 import { PinnedFund, GranularNAVRow } from '../types/mf';
 import { generateAMCNAVRows, formatDateDisplay } from '../services/amfiApi';
-import { endOfDay, parseISODate, returnBetween, shiftISODate, simulateSip, toISODate, timeTicks } from '../services/calc';
-import { timeTickFormatter } from './chartParts';
+import { endOfDay, parseISODate, returnBetween, shiftISODate, simulateSip, toISODate } from '../services/calc';
+import { useChartZoom, PointPanel, ZoomBar, SeriesDef, TimeRow, smartTicks, spanTickFormatter } from './ChartToolkit';
 import { fmtNav, fmtPct, fmtINR, pctClass, downloadCSV } from '../services/format';
 
 interface Page3Props {
@@ -16,8 +16,7 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({ pinnedFunds, isLoadin
   const [selectedSchemeCode, setSelectedSchemeCode] = useState<number | null>(null);
   const [rowLimit, setRowLimit] = useState<number>(60);
   const [magnify, setMagnify] = useState<boolean>(true);
-  const [zoomDays, setZoomDays] = useState<number>(60);
-  const [panOffset, setPanOffset] = useState<number>(0);
+  const [shown, setShown] = useState<Record<string, boolean>>({ NAV: true, r7: true, r15: true, r30: true });
 
   // Investment calculator
   const [calcMode, setCalcMode] = useState<'lumpsum' | 'sip'>('lumpsum');
@@ -53,24 +52,23 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({ pinnedFunds, isLoadin
     [granularRows]
   );
 
-  const sliced = useMemo(() => {
-    const N = chartData.length;
-    if (N === 0) return [];
-    const win = Math.min(N, zoomDays);
-    const off = Math.min(N - win, panOffset);
-    const start = Math.max(0, N - win - off);
-    // Window is chosen in calendar days, but only days with a published NAV are
-    // plotted on a time axis: weekends/holidays become proportional spacing on the
-    // axis (the line runs straight across) instead of flat fake "steps".
-    return chartData.slice(start, start + win).filter(r => !r.carried);
-  }, [chartData, zoomDays, panOffset]);
-  const spanDays = sliced.length > 1 ? (sliced[sliced.length - 1].t - sliced[0].t) / 86400000 : 0;
-  const xTicks = sliced.length ? timeTicks(sliced[0].t, sliced[sliced.length - 1].t, 6) : [];
+  // Only days with a published NAV are plotted, on a time axis: weekends and
+  // holidays become proportional spacing (the line runs straight across)
+  // instead of flat fake "steps". The table below still lists every day.
+  const published = useMemo(() => chartData.filter(r => !r.carried), [chartData]);
+  const zoom = useChartZoom(published, `${selectedFund?.schemeCode}|${rowLimit}`);
+  const sliced = zoom.visible;
+  const xTicks = smartTicks(sliced);
+  const selectedRow = (zoom.locked !== null ? zoom.data[zoom.locked] : null) as TimeRow | null;
 
-  useEffect(() => {
-    setZoomDays(rowLimit);
-    setPanOffset(0);
-  }, [selectedFund?.schemeCode, rowLimit]);
+  const SERIES: (SeriesDef & { axis: 'left' | 'right'; width: number })[] = [
+    { key: 'NAV', name: 'NAV (₹)', color: '#7c3aed', format: v => fmtNav(v), change: 'abs-pct', axis: 'left', width: 2.5 },
+    { key: 'r7', name: '7D % p.a.', color: '#2563eb', format: v => `${v.toFixed(2)}%`, change: 'pp', axis: 'right', width: 1.5 },
+    { key: 'r15', name: '15D % p.a.', color: '#d97706', format: v => `${v.toFixed(2)}%`, change: 'pp', axis: 'right', width: 1.5 },
+    { key: 'r30', name: '30D % p.a.', color: '#059669', format: v => `${v.toFixed(2)}%`, change: 'pp', axis: 'right', width: 2 }
+  ];
+  const activeSeries = SERIES.filter(x => shown[x.key]);
+  const anyReturns = activeSeries.some(x => x.axis === 'right');
 
   const metrics = useMemo(() => {
     if (granularRows.length === 0) return null;
@@ -200,51 +198,67 @@ export const Page3AMCIndividual: React.FC<Page3Props> = ({ pinnedFunds, isLoadin
                   <input type="checkbox" checked={magnify} onChange={e => setMagnify(e.target.checked)} style={{ accentColor: 'var(--color-purple)' }} />
                   Auto-scale returns axis
                 </label>
-                <div className="segmented">
-                  {[7, 15, 30].map(d => (
-                    <button key={d} className={zoomDays === Math.min(rowLimit, d) ? 'active' : ''} onClick={() => { setZoomDays(Math.min(rowLimit, d)); setPanOffset(0); }}>{d}D</button>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {SERIES.map(x => (
+                    <button
+                      key={x.key}
+                      onClick={() => setShown(p => ({ ...p, [x.key]: !p[x.key] }))}
+                      className="badge"
+                      style={{ cursor: 'pointer', border: `1px solid ${x.color}`, background: shown[x.key] ? x.color : '#fff', color: shown[x.key] ? '#fff' : x.color, padding: '4px 9px' }}
+                      aria-pressed={shown[x.key]}
+                    >
+                      {x.name}
+                    </button>
                   ))}
-                  <button className={zoomDays === rowLimit ? 'active' : ''} onClick={() => { setZoomDays(rowLimit); setPanOffset(0); }}>All</button>
                 </div>
               </div>
             </div>
-            <div className="chart-box" style={{ height: 340 }}>
+            <div className="chart-box chart-wrap" style={{ height: 340 }} tabIndex={0} onKeyDown={zoom.onKeyDown} aria-label="NAV and rolling returns chart">
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={sliced} margin={{ top: 10, right: 4, left: 0, bottom: 0 }}>
+                <ComposedChart data={sliced} margin={{ top: 10, right: 4, left: 0, bottom: 0 }} {...zoom.handlers}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} tickFormatter={timeTickFormatter(spanDays)} stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} />
-                  <YAxis yAxisId="left" stroke="#7c3aed" tick={{ fill: '#7c3aed', fontSize: 10 }} domain={['auto', 'auto']} width={56} tickFormatter={v => `₹${Number(v) >= 1000 ? Math.round(v) : Number(v).toFixed(2)}`} />
+                  <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} tickFormatter={spanTickFormatter(sliced)} stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} />
+                  <YAxis yAxisId="left" hide={!shown.NAV} stroke="#7c3aed" tick={{ fill: '#7c3aed', fontSize: 10 }} domain={['auto', 'auto']} width={60} tickFormatter={v => `₹${Number(v) >= 1000 ? Number(v).toFixed(1) : Number(v).toFixed(3)}`} />
                   <YAxis
                     yAxisId="right"
                     orientation="right"
+                    hide={!anyReturns}
                     stroke="#059669"
                     tick={{ fill: '#059669', fontSize: 10 }}
-                    width={44}
+                    width={46}
                     tickFormatter={v => `${Number(v).toFixed(1)}%`}
                     domain={magnify ? ['auto', 'auto'] : [(min: number) => Math.min(0, min), (max: number) => Math.max(10, max)]}
                   />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#ffffff', borderColor: '#cbd5e1', borderRadius: '8px', fontSize: '12px' }}
-                    labelFormatter={(_, p) => (p?.[0]?.payload?.fullDate as string) || ''}
-                    formatter={(v: any, name: any) => [name === 'NAV (₹)' ? fmtNav(v) : `${Number(v).toFixed(2)}%`, name]}
-                  />
-                  <Legend wrapperStyle={{ paddingTop: '8px', fontSize: '11px' }} />
-                  <Line yAxisId="left" type="monotone" dataKey="NAV" stroke="#7c3aed" strokeWidth={2.5} dot={sliced.length <= 45 ? { r: 2.5, fill: '#7c3aed', strokeWidth: 0 } : false} name="NAV (₹)" isAnimationActive={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="r7" stroke="#2563eb" strokeWidth={1.5} dot={false} name="7D % p.a." isAnimationActive={false} connectNulls />
-                  <Line yAxisId="right" type="monotone" dataKey="r15" stroke="#d97706" strokeWidth={1.5} dot={false} name="15D % p.a." isAnimationActive={false} connectNulls />
-                  <Line yAxisId="right" type="monotone" dataKey="r30" stroke="#059669" strokeWidth={2} dot={false} name="30D % p.a." isAnimationActive={false} connectNulls />
+                  <Tooltip content={() => null} cursor={{ stroke: '#94a3b8', strokeDasharray: '4 4', strokeWidth: 1 }} />
+                  {anyReturns && <ReferenceLine yAxisId="right" y={0} stroke="#cbd5e1" strokeDasharray="2 4" />}
+                  {activeSeries.map(x => (
+                    <Line
+                      key={x.key}
+                      yAxisId={x.axis}
+                      type="monotone"
+                      dataKey={x.key}
+                      stroke={x.color}
+                      strokeWidth={x.width}
+                      dot={x.key === 'NAV' && sliced.length <= 60 ? { r: 2.5, fill: x.color, strokeWidth: 0 } : false}
+                      activeDot={{ r: 4 }}
+                      name={x.name}
+                      isAnimationActive={false}
+                      connectNulls
+                    />
+                  ))}
+                  {selectedRow && <ReferenceLine yAxisId="left" x={selectedRow.t} stroke="#0f172a" strokeWidth={1} />}
+                  {selectedRow &&
+                    activeSeries.map(x =>
+                      typeof selectedRow[x.key] === 'number' ? (
+                        <ReferenceDot key={x.key} yAxisId={x.axis} x={selectedRow.t} y={selectedRow[x.key]} r={5} fill="#fff" stroke={x.color} strokeWidth={2.5} />
+                      ) : null
+                    )}
+                  {zoom.dragArea && <ReferenceArea yAxisId="left" x1={zoom.dragArea[0]} x2={zoom.dragArea[1]} strokeOpacity={0.3} fill="#7c3aed" fillOpacity={0.1} />}
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
-            {rowLimit > zoomDays && (
-              <div style={{ marginTop: 12 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                  <span>Scroll back in time</span>
-                  <span style={{ color: 'var(--text-muted)' }}>{panOffset === 0 ? 'Latest' : `${panOffset} days back`}</span>
-                </div>
-                <input type="range" min={0} max={Math.max(0, chartData.length - zoomDays)} value={panOffset} onChange={e => setPanOffset(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-purple)' }} />
-              </div>
-            )}
+            <PointPanel zoom={zoom} series={activeSeries} />
+            <ZoomBar zoom={zoom} presets={[{ label: '7D', days: 7 }, { label: '15D', days: 15 }, { label: '30D', days: 30 }, { label: '90D', days: 90 }].filter(p => p.days < rowLimit)} />
           </div>
 
           {/* Calculator */}

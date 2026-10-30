@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Sparkles, X, Search, RefreshCw, Eye, EyeOff, Calendar, Percent, TrendingUp, Plus } from 'lucide-react';
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine, ReferenceDot } from 'recharts';
 import { PinnedFund, MFSearchResult } from '../types/mf';
 import { fetchFundDetail, searchSchemes, formatDateDisplay } from '../services/amfiApi';
-import { endOfDay, parseISODate, shiftISODate, simulateSip, todayISO, returnBetween, alignSeries, carriedKey, valueKey, timeTicks, AlignedRow } from '../services/calc';
-import { realDot, timeTickFormatter } from './chartParts';
+import { endOfDay, parseISODate, shiftISODate, simulateSip, todayISO, returnBetween, alignSeries, carriedKey, valueKey, AlignedRow } from '../services/calc';
+import { realDot } from './chartParts';
+import { useChartZoom, PointPanel, ZoomBar, SeriesDef, TimeRow, smartTicks, spanTickFormatter } from './ChartToolkit';
 import { fmtNav, fmtPct, fmtINR, pctClass, shortName } from '../services/format';
 
 // Portfolio / holdings data is intentionally not shown: mfapi.in only exposes
@@ -122,9 +123,26 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
     );
   }, [selectedFunds, visibleFunds, comparisonMetric, startT, endT, validRange]);
 
-  const spanDays = chartData.length > 1 ? (chartData[chartData.length - 1].t - chartData[0].t) / 86400000 : 0;
-  const xTicks = chartData.length ? timeTicks(chartData[0].t, chartData[chartData.length - 1].t, 6) : [];
-  const showDots = chartData.length > 0 && chartData.length <= 45;
+  const visibleKey = filled.filter(({ f }) => visibleFunds[f.schemeCode] !== false).map(({ f }) => f.schemeCode).join(',');
+  const zoom = useChartZoom(chartData, `${visibleKey}|${comparisonMetric}|${startDate}|${endDate}`);
+  const shownData = zoom.visible;
+  const xTicks = smartTicks(shownData);
+  const showDots = shownData.length > 0 && shownData.length <= 60;
+  const selectedRow = (zoom.locked !== null ? zoom.data[zoom.locked] : null) as TimeRow | null;
+  const series: SeriesDef[] = filled
+    .filter(({ f }) => visibleFunds[f.schemeCode] !== false)
+    .map(({ f, i }) => {
+      const k = key(f.schemeCode);
+      return {
+        key: k,
+        name: f.schemeName,
+        color: colorFor(i),
+        getValue: (r: TimeRow) => r[valueKey(k)],
+        isCarried: (r: TimeRow) => !!r[carriedKey(k)],
+        format: comparisonMetric === 'NAV' ? (v: number) => v.toFixed(3) : (v: number) => `${v.toFixed(2)}%`,
+        change: comparisonMetric === 'NAV' ? 'pct' : 'pp'
+      } as SeriesDef;
+    });
 
   const slotIndices = Array.from({ length: Math.max(3, slotCount, selectedFunds.length) }, (_, i) => i);
 
@@ -296,7 +314,7 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
               <TrendingUp size={18} style={{ color: 'var(--color-primary)' }} /> Comparison Chart
             </h3>
             <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-              {comparisonMetric === 'NAV' ? 'NAV rebased to 100 on the range start date.' : `Rolling ${comparisonMetric} return on each date, simple annualised (% p.a.).`} * in the tooltip = no NAV that day, previous NAV used.
+              {comparisonMetric === 'NAV' ? 'NAV rebased to 100 on the range start date.' : `Rolling ${comparisonMetric} return on each date, simple annualised (% p.a.).`} * = no NAV that day, previous NAV used.
             </p>
           </div>
           <div className="segmented">
@@ -326,48 +344,47 @@ export const Page5Comparison: React.FC<Page5ComparisonProps> = ({
           })}
         </div>
 
-        <div className="chart-box">
+        <div className="chart-box chart-wrap" tabIndex={0} onKeyDown={zoom.onKeyDown} aria-label="Comparison chart">
           {chartData.length === 0 ? (
             <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center' }}>
               {validRange ? 'Add schemes and keep at least one visible to see the chart.' : 'Choose a valid date range.'}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}>
+              <LineChart data={shownData} margin={{ top: 10, right: 12, left: 0, bottom: 0 }} {...zoom.handlers}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={timeTickFormatter(spanDays)} />
-                <YAxis stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} domain={['auto', 'auto']} width={46} tickFormatter={v => (comparisonMetric === 'NAV' ? Number(v).toFixed(0) : `${Number(v).toFixed(1)}%`)} />
-                <Tooltip
-                  content={({ active, payload }) => {
-                    const row = payload?.[0]?.payload as AlignedRow | undefined;
-                    if (!active || !row) return null;
-                    const items = filled
-                      .filter(({ f }) => visibleFunds[f.schemeCode] !== false)
-                      .map(({ f, i }) => ({ f, i, v: row[valueKey(key(f.schemeCode))], c: !!row[carriedKey(key(f.schemeCode))] }))
-                      .filter(x => typeof x.v === 'number') as { f: PinnedFund; i: number; v: number; c: boolean }[];
-                    return (
-                      <div style={{ background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px', fontSize: 12, maxWidth: 300, boxShadow: 'var(--shadow-md)' }}>
-                        <div style={{ fontWeight: 700, marginBottom: 4 }}>{formatDateDisplay(new Date(row.t))}</div>
-                        {items.map(({ f, i, v, c }) => (
-                          <div key={f.schemeCode} style={{ display: 'flex', gap: 6, alignItems: 'center', color: colorFor(i) }}>
-                            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shortName(f.schemeName, 30)}</span>
-                            <strong>{comparisonMetric === 'NAV' ? `${v.toFixed(2)} (${fmtPct(v - 100)})` : `${v.toFixed(2)}%`}</strong>
-                            {c && <span style={{ color: '#94a3b8' }} title="No NAV this day; previous NAV used">*</span>}
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  }}
+                <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={spanTickFormatter(shownData)} />
+                <YAxis
+                  stroke="#94a3b8"
+                  tick={{ fill: '#64748b', fontSize: 10 }}
+                  domain={['auto', 'auto']}
+                  width={50}
+                  tickFormatter={v => (comparisonMetric === 'NAV' ? Number(v).toFixed(shownData.length <= 60 ? 2 : 1) : `${Number(v).toFixed(1)}%`)}
                 />
+                <Tooltip content={() => null} cursor={{ stroke: '#94a3b8', strokeDasharray: '4 4', strokeWidth: 1 }} />
+                {comparisonMetric === 'NAV' && <ReferenceLine y={100} stroke="#cbd5e1" strokeDasharray="2 4" />}
                 {filled.map(({ f, i }) =>
                   visibleFunds[f.schemeCode] === false ? null : (
                     <Line key={f.schemeCode} type="monotone" dataKey={key(f.schemeCode)} stroke={colorFor(i)} strokeWidth={2} dot={showDots ? realDot(key(f.schemeCode), colorFor(i)) : false} isAnimationActive={false} activeDot={{ r: 4 }} connectNulls />
                   )
                 )}
+                {selectedRow && <ReferenceLine x={selectedRow.t} stroke="#0f172a" strokeWidth={1} />}
+                {selectedRow &&
+                  series.map(sr => {
+                    const v = sr.getValue!(selectedRow);
+                    return typeof v === 'number' ? <ReferenceDot key={sr.key} x={selectedRow.t} y={v} r={5} fill="#fff" stroke={sr.color} strokeWidth={2.5} /> : null;
+                  })}
+                {zoom.dragArea && <ReferenceArea x1={zoom.dragArea[0]} x2={zoom.dragArea[1]} strokeOpacity={0.3} fill="#2563eb" fillOpacity={0.12} />}
               </LineChart>
             </ResponsiveContainer>
           )}
         </div>
+        {chartData.length > 0 && (
+          <>
+            <PointPanel zoom={zoom} series={series} />
+            <ZoomBar zoom={zoom} />
+          </>
+        )}
       </div>
     </div>
   );

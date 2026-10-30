@@ -1,10 +1,11 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { Sparkles, Layers, Filter, ZoomOut, AlertTriangle, Crosshair, ArrowUp, ArrowDown, Download } from 'lucide-react';
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea } from 'recharts';
+import React, { useState, useMemo, useCallback } from 'react';
+import { Sparkles, Layers, Filter, AlertTriangle, ArrowUp, ArrowDown, Download } from 'lucide-react';
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine, ReferenceDot } from 'recharts';
 import { PinnedFund } from '../types/mf';
 import { getNavOnDate, formatDateDisplay } from '../services/amfiApi';
-import { DAY_MS, todayISO, absoluteReturnPct, alignSeries, carriedKey, valueKey, timeTicks, AlignedRow } from '../services/calc';
-import { realDot, timeTickFormatter } from './chartParts';
+import { DAY_MS, todayISO, absoluteReturnPct, alignSeries, carriedKey, valueKey, AlignedRow } from '../services/calc';
+import { realDot } from './chartParts';
+import { useChartZoom, PointPanel, ZoomBar, SeriesDef, TimeRow, smartTicks, spanTickFormatter } from './ChartToolkit';
 import { fmtNav, fmtPct, pctClass, shortName, downloadCSV } from '../services/format';
 
 interface Page1Props {
@@ -15,10 +16,6 @@ interface Page1Props {
   pastDate: string;
 }
 
-interface HoveredPoint {
-  label: string;
-  items: { name: string; value: number; color: string; carried: boolean }[];
-}
 
 type SortKey = 'name' | 'nav' | 'day' | 'diff' | 'r7' | 'r30' | 'r1y' | 'r3y';
 
@@ -29,11 +26,6 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
   const [timeframe, setTimeframe] = useState<'1M' | '3M' | '6M' | '1Y' | '3Y' | 'ALL'>('3M');
   const [chartMode, setChartMode] = useState<'rebased' | 'absolute'>('rebased');
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
-
-  const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
-  const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
-  const [sliderRange, setSliderRange] = useState<[number, number] | null>(null);
-  const [hoveredPoint, setHoveredPoint] = useState<HoveredPoint | null>(null);
 
   const isPastDateSelected = pastDate !== todayISO();
   const colorOf = useCallback(
@@ -108,28 +100,19 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
   }, [pinnedFunds, timeframe, chartMode]);
 
   const fundsKey = pinnedFunds.map(f => f.schemeCode).join(',');
-  useEffect(() => {
-    setSliderRange(null);
-    setRefAreaLeft(null);
-    setRefAreaRight(null);
-    setHoveredPoint(null);
-  }, [fundsKey, timeframe, chartMode]);
+  const zoom = useChartZoom(chartData, `${fundsKey}|${timeframe}|${chartMode}`);
+  const displayedData = zoom.visible;
+  const showDots = displayedData.length > 0 && displayedData.length <= 60;
+  const tickFmt = spanTickFormatter(displayedData);
+  const xTicks = smartTicks(displayedData);
 
-  const lastIdx = Math.max(chartData.length - 1, 0);
-  const range: [number, number] = sliderRange ?? [0, lastIdx];
-  const displayedData = useMemo(() => chartData.slice(Math.min(range[0], lastIdx), Math.min(range[1], lastIdx) + 1), [chartData, range, lastIdx]);
-  const isZoomed = sliderRange !== null && (sliderRange[0] > 0 || sliderRange[1] < lastIdx);
-  const showDots = displayedData.length > 0 && displayedData.length <= 45;
-  const spanDays = displayedData.length > 1 ? (displayedData[displayedData.length - 1].t - displayedData[0].t) / DAY_MS : 0;
-  const tickFmt = timeTickFormatter(spanDays);
-  const xTicks = displayedData.length ? timeTicks(displayedData[0].t, displayedData[displayedData.length - 1].t, 6) : [];
-
+  // Y axis fits only the visible window, so small moves are magnified when zoomed in.
   const yDomain = useMemo((): [number, number] => {
     let min = Infinity;
     let max = -Infinity;
     displayedData.forEach(row => {
       pinnedFunds.forEach(f => {
-        const v = row[key(f.schemeCode)];
+        const v = row[valueKey(key(f.schemeCode))];
         if (typeof v === 'number') {
           if (v < min) min = v;
           if (v > max) max = v;
@@ -138,47 +121,30 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
     });
     if (!isFinite(min)) return [0, 100];
     if (min === max) {
-      const pad = Math.max(Math.abs(min) * 0.01, 0.5);
+      const pad = Math.max(Math.abs(min) * 0.001, 0.01);
       return [min - pad, max + pad];
     }
-    const pad = (max - min) * 0.1;
+    const pad = (max - min) * 0.08;
     return [min - pad, max + pad];
   }, [pinnedFunds, displayedData]);
 
-
-  const handleMouseDown = useCallback((e: any) => {
-    if (e?.activeLabel !== undefined) setRefAreaLeft(e.activeLabel);
-  }, []);
-  const handleMouseMove = useCallback(
-    (e: any) => {
-      if (!e || e.activeLabel === undefined) return;
-      if (refAreaLeft !== null) setRefAreaRight(e.activeLabel);
-      const row = e.activePayload?.[0]?.payload as AlignedRow | undefined;
-      if (row) {
-        setHoveredPoint({
-          label: formatDateDisplay(new Date(row.t)),
-          items: pinnedFunds
-            .map(f => {
-              const k = key(f.schemeCode);
-              const v = row[valueKey(k)];
-              return typeof v === 'number' ? { name: f.schemeName, value: v, color: colorOf(f.schemeCode), carried: !!row[carriedKey(k)] } : null;
-            })
-            .filter((x): x is NonNullable<typeof x> => x !== null)
-            .sort((a, b) => b.value - a.value)
-        });
-      }
-    },
-    [refAreaLeft, pinnedFunds, colorOf]
+  const series: SeriesDef[] = useMemo(
+    () =>
+      pinnedFunds.map(f => {
+        const k = key(f.schemeCode);
+        return {
+          key: k,
+          name: f.schemeName,
+          color: colorOf(f.schemeCode),
+          getValue: (r: TimeRow) => r[valueKey(k)],
+          isCarried: (r: TimeRow) => !!r[carriedKey(k)],
+          format: chartMode === 'rebased' ? (v: number) => v.toFixed(3) : (v: number) => fmtNav(v),
+          change: chartMode === 'rebased' ? 'pct' : 'abs-pct'
+        } as SeriesDef;
+      }),
+    [pinnedFunds, colorOf, chartMode]
   );
-  const handleMouseUp = useCallback(() => {
-    if (refAreaLeft !== null && refAreaRight !== null && refAreaLeft !== refAreaRight) {
-      const l = chartData.findIndex(d => d.t === refAreaLeft);
-      const r = chartData.findIndex(d => d.t === refAreaRight);
-      if (l !== -1 && r !== -1) setSliderRange([Math.min(l, r), Math.max(l, r)]);
-    }
-    setRefAreaLeft(null);
-    setRefAreaRight(null);
-  }, [refAreaLeft, refAreaRight, chartData]);
+  const selectedRow = zoom.locked !== null ? zoom.data[zoom.locked] : null;
 
   const best = (pick: (f: PinnedFund) => number | null) => {
     const c = pinnedFunds.filter(f => pick(f) !== null);
@@ -368,15 +334,10 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
           <div>
             <h3 className="card-title">Performance Comparison Chart</h3>
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              {chartMode === 'rebased' ? 'Every fund starts at 100 on the same start date, so lines are directly comparable.' : 'Actual published NAV values.'} Lines run smoothly through each fund's real NAV days (dots); on weekends/holidays the hover panel shows the last NAV, marked *. Drag on the chart or use the slider to zoom.
+              {chartMode === 'rebased' ? 'Every fund starts at 100 on the same start date, so lines are directly comparable.' : 'Actual published NAV values.'} Lines run smoothly through each fund's real NAV days (dots); on weekends/holidays the hover panel shows the last NAV, marked *.
             </p>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-            {isZoomed && (
-              <button onClick={() => setSliderRange(null)} className="btn btn-outline" style={{ padding: '4px 10px', fontSize: '0.72rem' }}>
-                <ZoomOut size={13} /> Reset
-              </button>
-            )}
             <div className="segmented">
               <button className={chartMode === 'rebased' ? 'active' : ''} onClick={() => setChartMode('rebased')}>Rebased 100</button>
               <button className={chartMode === 'absolute' ? 'active' : ''} onClick={() => setChartMode('absolute')}>NAV ₹</button>
@@ -395,19 +356,9 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
           <div style={{ height: '260px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', textAlign: 'center' }}>No NAV data in this range.</div>
         ) : (
           <>
-            <div className="chart-box">
+            <div className="chart-box chart-wrap" tabIndex={0} onKeyDown={zoom.onKeyDown} aria-label="Fund performance chart. Arrow keys step through points, plus and minus zoom.">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={displayedData}
-                  margin={{ top: 10, right: 12, left: 0, bottom: 0 }}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                  onMouseLeave={() => {
-                    setRefAreaLeft(null);
-                    setRefAreaRight(null);
-                  }}
-                >
+                <LineChart data={displayedData} margin={{ top: 10, right: 12, left: 0, bottom: 0 }} {...zoom.handlers}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} ticks={xTicks} stroke="#94a3b8" tick={{ fill: '#64748b', fontSize: 10 }} tickFormatter={tickFmt} />
                   <YAxis
@@ -415,10 +366,15 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
                     tick={{ fill: '#64748b', fontSize: 10 }}
                     domain={yDomain}
                     allowDataOverflow
-                    width={chartMode === 'rebased' ? 44 : 62}
-                    tickFormatter={v => (chartMode === 'rebased' ? Number(v).toFixed(1) : `₹${Number(v) >= 1000 ? Math.round(v) : Number(v).toFixed(1)}`)}
+                    width={chartMode === 'rebased' ? 48 : 64}
+                    tickFormatter={v => {
+                      const span = yDomain[1] - yDomain[0];
+                      const dp = span < 0.5 ? 3 : span < 5 ? 2 : 1;
+                      return chartMode === 'rebased' ? Number(v).toFixed(dp) : `₹${Number(v) >= 1000 ? Number(v).toFixed(span < 5 ? 2 : 0) : Number(v).toFixed(dp)}`;
+                    }}
                   />
                   <Tooltip content={() => null} cursor={{ stroke: '#94a3b8', strokeDasharray: '4 4', strokeWidth: 1 }} />
+                  {chartMode === 'rebased' && <ReferenceLine y={100} stroke="#cbd5e1" strokeDasharray="2 4" />}
                   {pinnedFunds.map(fund => (
                     <Line
                       key={fund.schemeCode}
@@ -433,65 +389,21 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
                       isAnimationActive={false}
                     />
                   ))}
-                  {refAreaLeft !== null && refAreaRight !== null && <ReferenceArea x1={refAreaLeft} x2={refAreaRight} strokeOpacity={0.3} fill="#2563eb" fillOpacity={0.12} />}
+                  {selectedRow && <ReferenceLine x={selectedRow.t} stroke="#0f172a" strokeWidth={1} />}
+                  {selectedRow &&
+                    pinnedFunds.map(f => {
+                      const v = selectedRow[valueKey(key(f.schemeCode))];
+                      return typeof v === 'number' ? (
+                        <ReferenceDot key={f.schemeCode} x={selectedRow.t} y={v} r={5} fill="#fff" stroke={colorOf(f.schemeCode)} strokeWidth={2.5} />
+                      ) : null;
+                    })}
+                  {zoom.dragArea && <ReferenceArea x1={zoom.dragArea[0]} x2={zoom.dragArea[1]} strokeOpacity={0.3} fill="#2563eb" fillOpacity={0.12} />}
                 </LineChart>
               </ResponsiveContainer>
             </div>
 
-            <div className="chart-hover-panel">
-              {hoveredPoint ? (
-                <>
-                  <div className="chart-hover-date">
-                    <Crosshair size={12} />
-                    {hoveredPoint.label}
-                  </div>
-                  <div className="chart-hover-grid">
-                    {hoveredPoint.items.map(item => (
-                      <div key={item.name} className="chart-hover-item">
-                        <span className="chart-hover-dot" style={{ backgroundColor: item.color }} />
-                        <span className="chart-hover-name" title={item.name}>{item.name}</span>
-                        <span className="chart-hover-value">
-                          {chartMode === 'rebased' ? `${item.value.toFixed(2)} (${fmtPct(item.value - 100)})` : fmtNav(item.value)}
-                          {item.carried && <span title="No NAV published this day; previous NAV carried forward" style={{ color: 'var(--text-muted)', fontWeight: 400 }}> *</span>}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div className="chart-hover-placeholder">Hover or tap the chart to see exact values for a date. * = no NAV that day, previous NAV carried forward.</div>
-              )}
-            </div>
-
-            {chartData.length > 2 && (
-              <div style={{ marginTop: '16px', padding: '0 4px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '6px', fontFamily: 'var(--font-mono)' }}>
-                  <span>{formatDateDisplay(new Date(chartData[range[0]].t))}</span>
-                  <span>{formatDateDisplay(new Date(chartData[Math.min(range[1], lastIdx)].t))}</span>
-                </div>
-                <div className="dual-slider-track">
-                  <div className="dual-slider-fill" style={{ left: `${(range[0] / lastIdx) * 100}%`, right: `${100 - (range[1] / lastIdx) * 100}%` }} />
-                  <input
-                    type="range"
-                    min={0}
-                    max={lastIdx}
-                    value={range[0]}
-                    onChange={e => setSliderRange([Math.min(Number(e.target.value), range[1] - 1), range[1]])}
-                    className="dual-slider-input"
-                    aria-label="Zoom start"
-                  />
-                  <input
-                    type="range"
-                    min={0}
-                    max={lastIdx}
-                    value={range[1]}
-                    onChange={e => setSliderRange([range[0], Math.max(Number(e.target.value), range[0] + 1)])}
-                    className="dual-slider-input"
-                    aria-label="Zoom end"
-                  />
-                </div>
-              </div>
-            )}
+            <PointPanel zoom={zoom} series={series} />
+            <ZoomBar zoom={zoom} presets={[{ label: '7D', days: 7 }, { label: '15D', days: 15 }, { label: '1M', days: 30 }].filter(p => p.days < ({ '1M': 30, '3M': 91, '6M': 182, '1Y': 365, '3Y': 1095, ALL: 1e9 }[timeframe]))} />
 
             {/* Legend (wraps nicely on phones, unlike the built-in one) */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', marginTop: 14 }}>
@@ -506,23 +418,6 @@ export const Page1FundExplorer: React.FC<Page1Props> = ({ pinnedFunds, onToggleP
         )}
       </div>
 
-      <style>{`
-        .chart-hover-panel { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background-color: #f8fafc; min-height: 44px; }
-        .chart-hover-date { display: flex; align-items: center; gap: 6px; font-size: 0.72rem; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono); margin-bottom: 8px; }
-        .chart-hover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 6px 16px; }
-        .chart-hover-item { display: flex; align-items: center; gap: 6px; font-size: 0.74rem; min-width: 0; }
-        .chart-hover-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-        .chart-hover-name { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
-        .chart-hover-value { font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); flex-shrink: 0; }
-        .chart-hover-placeholder { font-size: 0.74rem; color: var(--text-muted); text-align: center; padding: 4px 0; }
-        .dual-slider-track { position: relative; height: 28px; }
-        .dual-slider-track::before { content: ''; position: absolute; top: 12px; left: 0; right: 0; height: 4px; background-color: #e2e8f0; border-radius: 2px; }
-        .dual-slider-fill { position: absolute; top: 12px; height: 4px; background-color: var(--color-primary); border-radius: 2px; pointer-events: none; }
-        .dual-slider-input { position: absolute; top: 0; left: 0; width: 100%; margin: 0; height: 28px; background: transparent; -webkit-appearance: none; appearance: none; pointer-events: none; }
-        .dual-slider-input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; pointer-events: all; width: 20px; height: 20px; border-radius: 50%; background: #fff; border: 2.5px solid var(--color-primary); cursor: pointer; box-shadow: var(--shadow-sm); position: relative; z-index: 2; }
-        .dual-slider-input::-moz-range-thumb { pointer-events: all; width: 18px; height: 18px; border-radius: 50%; background: #fff; border: 2.5px solid var(--color-primary); cursor: pointer; }
-        .dual-slider-input::-webkit-slider-runnable-track, .dual-slider-input::-moz-range-track { background: transparent; }
-      `}</style>
     </div>
   );
 };
