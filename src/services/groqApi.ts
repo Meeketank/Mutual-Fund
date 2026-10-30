@@ -1,20 +1,24 @@
-import { PinnedFund } from '../types/mf';
-
 export async function generateGroqSummary(apiKey: string, rankingsData: any[]): Promise<string> {
   if (!apiKey) {
     throw new Error('Groq API Key is not configured. Please add it in the Developer Controls tab.');
   }
 
   // Format rankings data as a compact pipe-separated table to minimize token usage
-  const compactPayload = rankingsData.map(r => 
-    `${r.fundName} | ISIN: ${r.isin} | NAV: ${r.latestNav} | Date: ${r.navAsOf} | 7D: ${r.return7d}% | 15D: ${r.return15d}% | 30D: ${r.return30d}% | Rank: ${r.overallRank}`
-  ).join('\n');
+  const pct = (v: number | null | undefined) => (v === null || v === undefined ? 'n/a' : `${v}%`);
+  const compactPayload = rankingsData
+    .map(
+      r =>
+        `${r.fundName} | Category: ${r.category ?? 'n/a'} | NAV: ${r.latestNav ?? 'n/a'} | Date: ${r.navAsOf} | 7D: ${pct(r.return7d)} | 15D: ${pct(r.return15d)} | 30D: ${pct(r.return30d)} | Rank: ${r.overallRank}`
+    )
+    .join('\n');
 
   const systemPrompt = `You are a professional financial analyst specialized in Indian Mutual Funds.
 Analyze the provided mutual funds and compute comparative insights based on their performance.
 Important instructions:
 - Provide observations and conclusions in detail.
-- You must analyze the return metrics (7D, 15D, 30D) from the input payload.
+- The 7D, 15D and 30D figures are simple annualised returns (% p.a.). 'n/a' means not enough history.
+- Only use the numbers provided; do not invent data such as AUM, expense ratio or holdings.
+- Compare funds within the same category before comparing across categories.
 - Keep the tone highly professional, objective, and clear.
 - Frame your response in markdown format with two clear sections: "Observations" (numbered list) and "Executive Summary" (bullet list of key callouts and final takeaways).`;
 

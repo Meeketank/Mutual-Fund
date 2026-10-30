@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { Award, Trophy, Sparkles, TrendingUp, Crown, HelpCircle, Bot, AlertCircle, RefreshCw } from 'lucide-react';
+import { Award, Trophy, Sparkles, TrendingUp, Crown, HelpCircle, Bot, AlertCircle, RefreshCw, Download } from 'lucide-react';
 import {
   ResponsiveContainer,
   BarChart,
@@ -13,6 +13,8 @@ import {
 import { PinnedFund } from '../types/mf';
 import { getNavOnDate, formatDateDisplay } from '../services/amfiApi';
 import { generateGroqSummary } from '../services/groqApi';
+import { competitionRanks, endOfDay, periodReturn, round, todayISO } from '../services/calc';
+import { fmtNav, fmtPct, pctClass, downloadCSV } from '../services/format';
 
 interface Page4Props {
   pinnedFunds: PinnedFund[];
@@ -117,23 +119,14 @@ const classifyByName = (name: string): string => {
 const getFundCategory = (fund: PinnedFund): string => {
   // Prefer the official AMFI/scheme category if the fund object carries one
   // (however it may be named upstream) — this is the non-hardcoded path.
-  const anyFund = fund as any;
-  const officialCategory: unknown =
-    anyFund.category ?? anyFund.schemeCategory ?? anyFund.amfiCategory ?? anyFund.categoryName ?? anyFund.fundCategory;
-  if (typeof officialCategory === 'string' && officialCategory.trim().length > 0) {
-    return officialCategory.trim();
+  const official = (fund.category || '').trim();
+  if (official && official !== '-') {
+    // "Debt Scheme - Liquid Fund" -> "Liquid Fund"; keep the full string if there's no prefix.
+    const parts = official.split(/\s+-\s+/);
+    return (parts.length > 1 ? parts.slice(1).join(' - ') : official).trim();
   }
   // Fall back to inferring it from the scheme name.
   return classifyByName(fund.schemeName);
-};
-
-// Annualizes a simple period return given the actual number of days elapsed.
-// Uses a CAGR-style compounding formula: ((endNav / startNav) ^ (365/days)) - 1
-const annualizeReturn = (startNav: number, endNav: number, actualDays: number): number => {
-  if (startNav <= 0 || endNav <= 0 || actualDays <= 0) return 0;
-  const ratio = endNav / startNav;
-  const annualized = (Math.pow(ratio, 365 / actualDays) - 1) * 100;
-  return Math.round(annualized * 100) / 100;
 };
 
 export const Page4ConclusionRanking: React.FC<Page4Props> = ({
@@ -167,91 +160,43 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
   }, [pinnedFunds]);
 
   // Determine if a custom past date is selected (different from today)
-  const isPastDateSelected = useMemo(() => {
-    const todayStr = new Date().toISOString().split('T')[0];
-    return pastDate !== todayStr;
-  }, [pastDate]);
+  const isPastDateSelected = pastDate !== todayISO();
 
   // Compute rankings dynamically based on the selected date's metrics
   const rankings = useMemo(() => {
     if (pinnedFunds.length === 0) return [];
 
-    // Map each fund to its metrics on the target pastDate
+    // Metrics as of the selected date: NAV on/before that date and the
+    // point-to-point returns ending there (simple annualised, % p.a.).
     const fundsWithPastMetrics = pinnedFunds.map(fund => {
       const pastNavData = getNavOnDate(fund, pastDate);
-      const targetNav = pastNavData ? pastNavData.nav : fund.latestNav;
-
-      // Returns the ANNUALIZED return for a given lookback window (in days),
-      // based on the actual number of calendar days between the two NAV points used.
-      const getPastReturnForDays = (days: number): number => {
-        const history = fund.historicalData;
-        if (history.length < 2) return 0;
-
-        const targetTime = pastNavData ? new Date(pastNavData.date).getTime() : new Date().getTime();
-        const pastTime = targetTime - (days * 24 * 60 * 60 * 1000);
-
-        let targetIdx = -1;
-        let pastIdx = -1;
-
-        for (let i = 0; i < history.length; i++) {
-          if (history[i].parsedDate.getTime() <= targetTime) {
-            targetIdx = i;
-            break;
-          }
-        }
-        if (targetIdx === -1) targetIdx = 0;
-
-        for (let j = targetIdx + 1; j < history.length; j++) {
-          if (history[j].parsedDate.getTime() <= pastTime) {
-            pastIdx = j;
-            break;
-          }
-        }
-        if (pastIdx === -1) pastIdx = history.length - 1;
-
-        const currentNav = history[targetIdx]?.nav || 0;
-        const pastNav = history[pastIdx]?.nav || 0;
-        const currentDateVal = history[targetIdx]?.parsedDate.getTime() || targetTime;
-        const pastDateVal = history[pastIdx]?.parsedDate.getTime() || pastTime;
-
-        // Actual elapsed calendar days between the two data points (min 1 to avoid divide-by-zero blowups)
-        const actualDays = Math.max(1, Math.round((currentDateVal - pastDateVal) / (24 * 60 * 60 * 1000)));
-
-        if (pastNav === 0) return 0;
-
-        return annualizeReturn(pastNav, currentNav, actualDays);
+      const endT = pastNavData ? endOfDay(pastNavData.parsedDate) : -Infinity;
+      const ann = (days: number) => {
+        const r = pastNavData ? periodReturn(fund.historyAsc, endT, days) : null;
+        return r ? round(r.annualised, 2) : null;
       };
-
       return {
         fund,
-        targetNav,
-        navAsOf: pastNavData ? pastNavData.date : fund.navAsOf,
-        targetReturn7d: getPastReturnForDays(7),
-        targetReturn15d: getPastReturnForDays(15),
-        targetReturn30d: getPastReturnForDays(30)
+        targetNav: pastNavData ? pastNavData.nav : null,
+        navAsOf: pastNavData ? pastNavData.date : '—',
+        targetReturn7d: ann(7),
+        targetReturn15d: ann(15),
+        targetReturn30d: ann(30)
       };
     });
 
-    // Compute ranks based on target metrics (now annualized)
-    const sortedByReturn30d = [...fundsWithPastMetrics].sort((a, b) => b.targetReturn30d - a.targetReturn30d);
-    const rank30dMap = new Map<number, number>();
-    sortedByReturn30d.forEach((item, idx) => rank30dMap.set(item.fund.schemeCode, idx + 1));
-
-    const sortedByReturn15d = [...fundsWithPastMetrics].sort((a, b) => b.targetReturn15d - a.targetReturn15d);
-    const rank15dMap = new Map<number, number>();
-    sortedByReturn15d.forEach((item, idx) => rank15dMap.set(item.fund.schemeCode, idx + 1));
-
-    const sortedByReturn7d = [...fundsWithPastMetrics].sort((a, b) => b.targetReturn7d - a.targetReturn7d);
-    const rank7dMap = new Map<number, number>();
-    sortedByReturn7d.forEach((item, idx) => rank7dMap.set(item.fund.schemeCode, idx + 1));
+    const code = (i: (typeof fundsWithPastMetrics)[number]) => i.fund.schemeCode;
+    const rank30dMap = competitionRanks(fundsWithPastMetrics, i => i.targetReturn30d, code);
+    const rank15dMap = competitionRanks(fundsWithPastMetrics, i => i.targetReturn15d, code);
+    const rank7dMap = competitionRanks(fundsWithPastMetrics, i => i.targetReturn7d, code);
 
     const scored = fundsWithPastMetrics.map(item => {
       const return30dRank = rank30dMap.get(item.fund.schemeCode) || pinnedFunds.length;
       const return15dRank = rank15dMap.get(item.fund.schemeCode) || pinnedFunds.length;
       const return7dRank = rank7dMap.get(item.fund.schemeCode) || pinnedFunds.length;
 
-      // Composite rank score (50% 30D Return, 30% 15D Return, 20% 7D Return) — all annualized
-      const score = (return30dRank * 0.5) + (return15dRank * 0.3) + (return7dRank * 0.2);
+      // Composite rank score (50% 30D, 30% 15D, 20% 7D). Lower is better.
+      const score = return30dRank * 0.5 + return15dRank * 0.3 + return7dRank * 0.2;
 
       return {
         schemeCode: item.fund.schemeCode,
@@ -273,9 +218,10 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
     });
 
     // Final Overall Rank
-    scored.sort((a, b) => a.overallScore - b.overallScore);
+    scored.sort((a, b) => a.overallScore - b.overallScore || (b.return30d ?? -Infinity) - (a.return30d ?? -Infinity));
     scored.forEach((item, idx) => {
-      item.overallRank = idx + 1;
+      const prev = scored[idx - 1];
+      item.overallRank = prev && prev.overallScore === item.overallScore && prev.return30d === item.return30d ? prev.overallRank : idx + 1;
     });
 
     return scored;
@@ -312,25 +258,18 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
   // Group average statistics
   const groupAverages = useMemo(() => {
     if (!groupedRankings) return null;
-    const avgs: Record<string, { avg7d: number; avg15d: number; avg30d: number; count: number }> = {};
+    const avgs: Record<string, { avg7d: number | null; avg15d: number | null; avg30d: number | null; count: number }> = {};
 
     Object.entries(groupedRankings).forEach(([gName, rows]) => {
-      let sum7d = 0;
-      let sum15d = 0;
-      let sum30d = 0;
-      const count = rows.length;
-
-      rows.forEach(r => {
-        sum7d += r.return7d;
-        sum15d += r.return15d;
-        sum30d += r.return30d;
-      });
-
+      const avg = (vals: (number | null)[]) => {
+        const v = vals.filter((x): x is number => x !== null);
+        return v.length ? Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 100) / 100 : null;
+      };
       avgs[gName] = {
-        avg7d: count > 0 ? Math.round((sum7d / count) * 100) / 100 : 0,
-        avg15d: count > 0 ? Math.round((sum15d / count) * 100) / 100 : 0,
-        avg30d: count > 0 ? Math.round((sum30d / count) * 100) / 100 : 0,
-        count
+        avg7d: avg(rows.map(r => r.return7d)),
+        avg15d: avg(rows.map(r => r.return15d)),
+        avg30d: avg(rows.map(r => r.return30d)),
+        count: rows.length
       };
     });
 
@@ -345,10 +284,7 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
     const count = rows.length;
     const rank = (key: '30d' | '15d' | '7d') => {
       const field = key === '30d' ? 'return30d' : key === '15d' ? 'return15d' : 'return7d';
-      const sorted = [...rows].sort((a, b) => (b[field] as number) - (a[field] as number));
-      const map = new Map<number, number>();
-      sorted.forEach((r, idx) => map.set(r.schemeCode, idx + 1));
-      return map;
+      return competitionRanks(rows, r => r[field], r => r.schemeCode);
     };
     const map30 = rank('30d');
     const map15 = rank('15d');
@@ -499,18 +435,18 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {/* Page Header */}
-      <div className="card-panel" style={{ borderLeft: '4px solid var(--color-warning)', background: 'linear-gradient(90deg, #fffbeb 0%, #ffffff 100%)' }}>
+      <div className="card-panel page-hero" style={{ borderLeft: '4px solid var(--color-warning)', background: 'linear-gradient(90deg, #fffbeb 0%, #ffffff 100%)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-mono)' }}>
           <Sparkles size={12} />
           <span>Decision & Ranking Matrix</span>
         </div>
-        <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '4px', color: 'var(--text-primary)' }}>
+        <h2>
           {isPastDateSelected ? 'Historical Rankings & Performance Matrix' : 'Conclusion & Return-Based Rankings'}
         </h2>
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+        <p>
           {isPastDateSelected
             ? `Rankings calculated dynamically using annualized historical returns on ${formatDateDisplay(pastDate)}.`
-            : 'Composite performance rankings weighted by 30-Day annualized returns (50%), 15-Day annualized returns (30%), and 7-Day annualized returns (20%).'}
+            : 'Composite rankings weighted by 30-day (50%), 15-day (30%) and 7-day (20%) annualised returns.'}
         </p>
       </div>
 
@@ -542,7 +478,7 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
                 <div style={{ fontSize: '0.9rem', fontWeight: 800, marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={winner30d?.fundName}>
                   {winner30d?.fundName}
                 </div>
-                <div style={{ fontSize: '0.75rem', marginTop: '4px', color: 'var(--text-secondary)' }}>+{winner30d?.return30d.toFixed(2)}% (Annualized)</div>
+                <div style={{ fontSize: '0.75rem', marginTop: '4px', color: 'var(--text-secondary)' }}>{fmtPct(winner30d?.return30d)} p.a.</div>
               </div>
 
               <div className="card-panel" style={{ backgroundColor: 'var(--color-primary-light)', borderColor: 'var(--accent-blue-border)', padding: '16px' }}>
@@ -552,7 +488,7 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
                 <div style={{ fontSize: '0.9rem', fontWeight: 800, marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={winner15d?.fundName}>
                   {winner15d?.fundName}
                 </div>
-                <div style={{ fontSize: '0.75rem', marginTop: '4px', color: 'var(--text-secondary)' }}>+{winner15d?.return15d.toFixed(2)}% (Annualized)</div>
+                <div style={{ fontSize: '0.75rem', marginTop: '4px', color: 'var(--text-secondary)' }}>{fmtPct(winner15d?.return15d)} p.a.</div>
               </div>
 
               <div className="card-panel" style={{ backgroundColor: 'var(--color-purple-light)', borderColor: 'var(--accent-purple-border)', padding: '16px' }}>
@@ -562,7 +498,7 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
                 <div style={{ fontSize: '0.9rem', fontWeight: 800, marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={winner7d?.fundName}>
                   {winner7d?.fundName}
                 </div>
-                <div style={{ fontSize: '0.75rem', marginTop: '4px', color: 'var(--text-secondary)' }}>+{winner7d?.return7d.toFixed(2)}% (Annualized)</div>
+                <div style={{ fontSize: '0.75rem', marginTop: '4px', color: 'var(--text-secondary)' }}>{fmtPct(winner7d?.return7d)} p.a.</div>
               </div>
             </div>
           ) : (
@@ -593,9 +529,9 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
                       {leader?.fundName}
                     </div>
                     <div style={{ display: 'flex', gap: '8px', marginTop: '6px', fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
-                      <span style={{ color: (leader?.return30d ?? 0) >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>30D {(leader?.return30d ?? 0) > 0 ? '+' : ''}{leader?.return30d.toFixed(2)}%</span>
-                      <span style={{ color: (leader?.return15d ?? 0) >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>15D {(leader?.return15d ?? 0) > 0 ? '+' : ''}{leader?.return15d.toFixed(2)}%</span>
-                      <span style={{ color: (leader?.return7d ?? 0) >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>7D {(leader?.return7d ?? 0) > 0 ? '+' : ''}{leader?.return7d.toFixed(2)}%</span>
+                      <span className={pctClass(leader?.return30d)}>30D {fmtPct(leader?.return30d)}</span>
+                      <span className={pctClass(leader?.return15d)}>15D {fmtPct(leader?.return15d)}</span>
+                      <span className={pctClass(leader?.return7d)}>7D {fmtPct(leader?.return7d)}</span>
                     </div>
                   </div>
                 ))}
@@ -615,13 +551,25 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
                   <span>
                     Rank is computed using annualized 30D (50%), 15D (30%), and 7D (20%) returns
                     {groupedRankingsLocal ? ', re-ranked separately within each group below (so every group gets its own #1).' : '.'}
-                    {' '}All returns shown are annualized (CAGR-style).
+                    {' '}Returns are simple annualised (% p.a.), the SEBI convention for periods under 1 year. Ties share a rank.
                   </span>
                 </div>
               </div>
 
               {/* Segregation Mode Dropdown / Button Row */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-outline"
+                  style={{ padding: '4px 10px', fontSize: '0.74rem', height: '30px' }}
+                  onClick={() =>
+                    downloadCSV(`fund_rankings_${pastDate}.csv`, [
+                      ['Overall Rank', 'Fund', 'ISIN', 'AMC', 'Category', 'NAV', 'NAV Date', '7D % p.a.', '15D % p.a.', '30D % p.a.', '7D Rank', '15D Rank', '30D Rank'],
+                      ...rankings.map(r => [r.overallRank, r.fundName, r.isin, r.amc, r.category, r.latestNav, r.navAsOf, r.return7d, r.return15d, r.return30d, r.return7dRank, r.return15dRank, r.return30dRank])
+                    ])
+                  }
+                >
+                  <Download size={13} /> CSV
+                </button>
                 <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>Segregate By:</span>
                 <select
                   value={segregationMode}
@@ -650,7 +598,7 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
             {segregationMode === 'category' && (
               <div style={{ backgroundColor: 'var(--color-primary-light)', border: '1px dashed var(--color-primary)', borderRadius: 'var(--radius-sm)', padding: '10px 14px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                 <Sparkles size={14} style={{ color: 'var(--color-purple)', marginRight: '6px', verticalAlign: 'middle', display: 'inline-block' }} />
-                <span>Funds are auto-classified into categories (Liquid, Overnight, Debt, Equity, Hybrid, Index/ETF, Arbitrage, Gold, etc.) based on their scheme name. Anything that doesn't match a known category falls under "Other / Uncategorized".</span>
+                <span>Funds are grouped by their official AMFI/SEBI category. Only if AMFI doesn't supply one is the category guessed from the scheme name.</span>
               </div>
             )}
 
@@ -738,17 +686,11 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
                                   )}
                                 </td>
                                 <td className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{row.isin}</td>
-                                <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--color-success)' }}>₹{row.latestNav.toFixed(4)}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtNav(row.latestNav)}</td>
                                 <td style={{ color: 'var(--text-muted)' }}>{row.navAsOf}</td>
-                                <td style={{ textAlign: 'right', color: row.return7d >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                                  {row.return7d > 0 ? '+' : ''}{row.return7d.toFixed(2)}%
-                                </td>
-                                <td style={{ textAlign: 'right', color: row.return15d >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                                  {row.return15d > 0 ? '+' : ''}{row.return15d.toFixed(2)}%
-                                </td>
-                                <td style={{ textAlign: 'right', color: row.return30d >= 0 ? 'var(--color-success)' : 'var(--color-danger)', fontWeight: 700 }}>
-                                  {row.return30d > 0 ? '+' : ''}{row.return30d.toFixed(2)}%
-                                </td>
+                                <td style={{ textAlign: 'right' }} className={pctClass(row.return7d)}>{fmtPct(row.return7d)}</td>
+                                <td style={{ textAlign: 'right' }} className={pctClass(row.return15d)}>{fmtPct(row.return15d)}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 700 }} className={pctClass(row.return30d)}>{fmtPct(row.return30d)}</td>
                                 <td style={{ textAlign: 'center' }}><span className="badge badge-purple" style={{ padding: '2px 6px' }}>#{row.localReturn7dRank}</span></td>
                                 <td style={{ textAlign: 'center' }}><span className="badge badge-blue" style={{ padding: '2px 6px' }}>#{row.localReturn15dRank}</span></td>
                                 <td style={{ textAlign: 'center' }}><span className="badge badge-green" style={{ padding: '2px 6px' }}>#{row.localReturn30dRank}</span></td>
@@ -762,15 +704,9 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
                               <td colSpan={5} style={{ padding: '8px 12px', fontSize: '0.75rem', color: 'var(--text-secondary)', textAlign: 'right' }}>
                                 📊 Average Annualized Return for {groupName}:
                               </td>
-                              <td style={{ textAlign: 'right', color: avg.avg7d >= 0 ? 'var(--color-success)' : 'var(--color-danger)', fontSize: '0.75rem' }}>
-                                {avg.avg7d > 0 ? '+' : ''}{avg.avg7d.toFixed(2)}%
-                              </td>
-                              <td style={{ textAlign: 'right', color: avg.avg15d >= 0 ? 'var(--color-success)' : 'var(--color-danger)', fontSize: '0.75rem' }}>
-                                {avg.avg15d > 0 ? '+' : ''}{avg.avg15d.toFixed(2)}%
-                              </td>
-                              <td style={{ textAlign: 'right', color: avg.avg30d >= 0 ? 'var(--color-success)' : 'var(--color-danger)', fontSize: '0.75rem', fontWeight: 800 }}>
-                                {avg.avg30d > 0 ? '+' : ''}{avg.avg30d.toFixed(2)}%
-                              </td>
+                              <td style={{ textAlign: 'right', fontSize: '0.75rem' }} className={pctClass(avg.avg7d)}>{fmtPct(avg.avg7d)}</td>
+                              <td style={{ textAlign: 'right', fontSize: '0.75rem' }} className={pctClass(avg.avg15d)}>{fmtPct(avg.avg15d)}</td>
+                              <td style={{ textAlign: 'right', fontSize: '0.75rem', fontWeight: 800 }} className={pctClass(avg.avg30d)}>{fmtPct(avg.avg30d)}</td>
                               <td colSpan={3} style={{ backgroundColor: '#f8fafc' }} />
                             </tr>
                           )}
@@ -791,17 +727,11 @@ export const Page4ConclusionRanking: React.FC<Page4Props> = ({
                           </td>
                           <td style={{ fontWeight: 600, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '220px' }}>{row.fundName}</td>
                           <td className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{row.isin}</td>
-                          <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--color-success)' }}>₹{row.latestNav.toFixed(4)}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmtNav(row.latestNav)}</td>
                           <td style={{ color: 'var(--text-muted)' }}>{row.navAsOf}</td>
-                          <td style={{ textAlign: 'right', color: row.return7d >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                            {row.return7d > 0 ? '+' : ''}{row.return7d.toFixed(2)}%
-                          </td>
-                          <td style={{ textAlign: 'right', color: row.return15d >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                            {row.return15d > 0 ? '+' : ''}{row.return15d.toFixed(2)}%
-                          </td>
-                          <td style={{ textAlign: 'right', color: row.return30d >= 0 ? 'var(--color-success)' : 'var(--color-danger)', fontWeight: 700 }}>
-                            {row.return30d > 0 ? '+' : ''}{row.return30d.toFixed(2)}%
-                          </td>
+                          <td style={{ textAlign: 'right' }} className={pctClass(row.return7d)}>{fmtPct(row.return7d)}</td>
+                          <td style={{ textAlign: 'right' }} className={pctClass(row.return15d)}>{fmtPct(row.return15d)}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }} className={pctClass(row.return30d)}>{fmtPct(row.return30d)}</td>
                           <td style={{ textAlign: 'center' }}><span className="badge badge-purple" style={{ padding: '2px 6px' }}>#{row.return7dRank}</span></td>
                           <td style={{ textAlign: 'center' }}><span className="badge badge-blue" style={{ padding: '2px 6px' }}>#{row.return15dRank}</span></td>
                           <td style={{ textAlign: 'center' }}><span className="badge badge-green" style={{ padding: '2px 6px' }}>#{row.return30dRank}</span></td>

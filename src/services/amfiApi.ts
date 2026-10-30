@@ -1,437 +1,277 @@
+import { MFSearchResult, MFDetailResponse, PinnedFund, GranularNAVRow, NavHistoryPoint } from '../types/mf';
 import {
-  MFSearchResult,
-  MFDetailResponse,
-  PinnedFund,
-  GranularNAVRow,
-  RankingRow
-} from '../types/mf';
+  DAY_MS,
+  daysBetween,
+  dailyCarryForward,
+  endOfDay,
+  findOnOrBefore,
+  parseAMFIDate,
+  parseISODate,
+  periodReturn,
+  riskStats,
+  cagrPct,
+  round
+} from './calc';
+
+export { parseAMFIDate } from './calc';
 
 const API_BASE = 'https://api.mfapi.in/mf';
+const CACHE_TTL_MS = 15 * 60 * 1000; // NAVs update once a day; 15 min is plenty fresh
 
 export const DEFAULT_SCHEME_CODES: { schemeCode: number; name: string }[] = [];
 
-export function parseAMFIDate(dateStr: string): Date {
-  const parts = dateStr.split('-');
-  if (parts.length === 3) {
-    const day = parseInt(parts[0], 10);
-    const month = parseInt(parts[1], 10) - 1;
-    const year = parseInt(parts[2], 10);
-    return new Date(year, month, day);
-  }
-  return new Date(dateStr);
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "05 Aug 2026". Accepts a Date, DD-MM-YYYY or YYYY-MM-DD. */
+export function formatDateDisplay(input: string | Date): string {
+  let d: Date;
+  if (input instanceof Date) d = input;
+  else if (/^\d{4}-\d{2}-\d{2}$/.test(input)) d = parseISODate(input);
+  else d = parseAMFIDate(input);
+  if (isNaN(d.getTime())) return typeof input === 'string' ? input : '';
+  return `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-export function formatDateDisplay(dateStrOrObj: string | Date): string {
-  const d = typeof dateStrOrObj === 'string' ? parseAMFIDate(dateStrOrObj) : dateStrOrObj;
-  if (isNaN(d.getTime())) return typeof dateStrOrObj === 'string' ? dateStrOrObj : '';
-  const day = String(d.getDate()).padStart(2, '0');
-  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const month = monthNames[d.getMonth()];
-  const year = d.getFullYear();
-  return `${day} ${month} ${year}`;
+/** "05 Aug" — compact label for chart axes. */
+export function formatDateShort(d: Date): string {
+  return `${String(d.getDate()).padStart(2, '0')} ${MONTHS[d.getMonth()]}`;
+}
+
+async function fetchJSON(url: string, timeoutMs = 20000, retries = 1): Promise<any> {
+  for (let attempt = 0; ; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      if (attempt >= retries) throw err;
+      await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
 
 let allSchemesCache: MFSearchResult[] | null = null;
-const fundDetailsCache: Map<number, PinnedFund> = new Map();
-
-export function calculateAnnualizedReturn(returnPct: number | null, days: number): number | null {
-  if (returnPct === null || isNaN(returnPct) || days <= 0) return null;
-  const growthFactor = 1 + returnPct / 100;
-  if (growthFactor <= 0) return null;
-  const ann = (Math.pow(growthFactor, 365 / days) - 1) * 100;
-  return Math.round(ann * 100) / 100;
-}
+const fundDetailsCache = new Map<number, { fund: PinnedFund; at: number }>();
 
 export async function fetchAllSchemes(): Promise<MFSearchResult[]> {
   if (allSchemesCache) return allSchemesCache;
   try {
-    const res = await fetch(`${API_BASE}`);
-    if (!res.ok) throw new Error('Failed to fetch scheme directory');
-    const data = await res.json();
-    allSchemesCache = data.map((item: any) => ({
-      schemeCode: item.schemeCode,
-      schemeName: item.schemeName
-    }));
-    return allSchemesCache || [];
+    const data = await fetchJSON(API_BASE, 30000);
+    allSchemesCache = (data as any[]).map(item => ({ schemeCode: item.schemeCode, schemeName: item.schemeName }));
+    return allSchemesCache;
   } catch (err) {
     console.error('Error fetching scheme list:', err);
-    return DEFAULT_SCHEME_CODES.map(d => ({ schemeCode: d.schemeCode, schemeName: d.name }));
+    return [];
   }
 }
 
 export async function searchSchemes(query: string): Promise<MFSearchResult[]> {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-
   const isNumeric = /^\d+$/.test(q);
 
-  try {
-    // If input is numeric (e.g. 120503), try direct lookup first
-    if (isNumeric) {
-      try {
-        const detail = await fetchFundDetail(Number(q));
-        if (detail) {
-          return [{ schemeCode: detail.schemeCode, schemeName: detail.schemeName }];
-        }
-      } catch (e) {
-        // Direct fetch failed, fallback
-      }
-    }
+  if (isNumeric) {
+    const detail = await fetchFundDetail(Number(q)).catch(() => null);
+    if (detail && !detail.loadError) return [{ schemeCode: detail.schemeCode, schemeName: detail.schemeName }];
+  }
 
-    const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        return data.slice(0, 50).map((item: any) => ({
-          schemeCode: item.schemeCode,
-          schemeName: item.schemeName
-        }));
-      }
+  try {
+    const data = await fetchJSON(`${API_BASE}/search?q=${encodeURIComponent(query.trim())}`, 15000, 0);
+    if (Array.isArray(data) && data.length > 0) {
+      return data.slice(0, 50).map((item: any) => ({ schemeCode: item.schemeCode, schemeName: item.schemeName }));
     }
   } catch (e) {
-    console.warn('Live API search failed, falling back to cached directory search', e);
+    console.warn('Live search failed, falling back to full directory', e);
   }
 
+  // Fallback: every word must appear somewhere in the name.
+  const words = q.split(/\s+/);
   const list = await fetchAllSchemes();
-  return list.filter(s => {
-    if (isNumeric) {
-      return String(s.schemeCode).includes(q);
-    }
-    return s.schemeName.toLowerCase().includes(q);
-  }).slice(0, 50);
+  return list
+    .filter(s => (isNumeric ? String(s.schemeCode).includes(q) : words.every(w => s.schemeName.toLowerCase().includes(w))))
+    .slice(0, 50);
 }
 
-export async function fetchFundDetail(schemeCode: number): Promise<PinnedFund> {
-  if (fundDetailsCache.has(schemeCode)) {
-    return fundDetailsCache.get(schemeCode)!;
-  }
-
-  try {
-    const res = await fetch(`${API_BASE}/${schemeCode}`);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch scheme details for ${schemeCode}`);
-    }
-
-    const json: MFDetailResponse = await res.json();
-    const meta = json.meta;
-    const rawData = json.data || [];
-
-    // Graceful fallback if API returns empty data for a scheme
-    if (rawData.length === 0) {
-      console.warn(`Scheme ${schemeCode} returned no NAV data — creating fallback.`);
-      const defaultInfo = DEFAULT_SCHEME_CODES.find(d => d.schemeCode === schemeCode);
-      const fallback: PinnedFund = {
-        schemeCode: meta.scheme_code || schemeCode,
-        schemeName: meta.scheme_name || defaultInfo?.name || `Scheme ${schemeCode}`,
-        isin: meta.isin_growth || meta.isin_div_reinvestment || '-',
-        amc: meta.fund_house || 'Mutual Fund AMC',
-        launchDate: '-',
-        latestNav: 100,
-        navAsOf: '-',
-        historicalData: [],
-        return7d: 0,
-        return15d: 0,
-        return30d: 0,
-        return7dAnn: 0,
-        return15dAnn: 0,
-        return30dAnn: 0
-      };
-      fundDetailsCache.set(schemeCode, fallback);
-      return fallback;
-    }
-
-    // Parse and sort historical data newest-first
-    const historical = rawData.map(d => ({
-      date: d.date,
-      nav: parseFloat(d.nav) || 0,
-      parsedDate: parseAMFIDate(d.date)
-    })).sort((a, b) => b.parsedDate.getTime() - a.parsedDate.getTime());
-
-    const latestItem = historical[0];
-    const oldestItem = historical[historical.length - 1];
-
-    const isin = meta.isin_growth || meta.isin_div_reinvestment || '-';
-
-    const calculateReturnForDays = (days: number): number => {
-      if (historical.length < 2) return 0;
-      const latestTime = latestItem.parsedDate.getTime();
-      const targetTime = latestTime - (days * 24 * 60 * 60 * 1000);
-
-      let targetIndex = -1;
-      for (let i = 0; i < historical.length; i++) {
-        if (historical[i].parsedDate.getTime() <= targetTime) {
-          targetIndex = i;
-          break;
-        }
-      }
-      if (targetIndex === -1) targetIndex = historical.length - 1;
-
-      const pastNav = historical[targetIndex].nav;
-      if (pastNav === 0) return 0;
-
-      const returnPct = ((latestItem.nav - pastNav) / pastNav) * 100;
-      return Math.round(returnPct * 100) / 100;
-    };
-
-    const ret7d = calculateReturnForDays(7);
-    const ret15d = calculateReturnForDays(15);
-    const ret30d = calculateReturnForDays(30);
-
-    const fund: PinnedFund = {
-      schemeCode: meta.scheme_code,
-      schemeName: meta.scheme_name,
-      isin,
-      amc: meta.fund_house || 'Mutual Fund AMC',
-      launchDate: formatDateDisplay(oldestItem.date),
-      latestNav: latestItem.nav,
-      navAsOf: formatDateDisplay(latestItem.date),
-      historicalData: historical,
-      return7d: ret7d,
-      return15d: ret15d,
-      return30d: ret30d,
-      return7dAnn: calculateAnnualizedReturn(ret7d, 7) || 0,
-      return15dAnn: calculateAnnualizedReturn(ret15d, 15) || 0,
-      return30dAnn: calculateAnnualizedReturn(ret30d, 30) || 0
-    };
-
-    fundDetailsCache.set(schemeCode, fund);
-    return fund;
-  } catch (err) {
-    console.warn(`Network/API error loading scheme ${schemeCode}, creating resilient fallback`, err);
-    const defaultInfo = DEFAULT_SCHEME_CODES.find(d => d.schemeCode === schemeCode);
-    const fallback: PinnedFund = {
-      schemeCode: schemeCode,
-      schemeName: defaultInfo?.name || `Scheme ${schemeCode}`,
-      isin: '-',
-      amc: 'Mutual Fund AMC',
-      launchDate: '-',
-      latestNav: 100,
-      navAsOf: '-',
-      historicalData: [],
-      return7d: 0,
-      return15d: 0,
-      return30d: 0,
-      return7dAnn: 0,
-      return15dAnn: 0,
-      return30dAnn: 0
-    };
-    fundDetailsCache.set(schemeCode, fallback);
-    return fallback;
-  }
-}
-
-export function generateAMCNAVRows(fund: PinnedFund, limit: number = 100): GranularNAVRow[] {
-  const history = fund.historicalData;
-  if (history.length === 0) return [];
-
-  // Build continuous daily map so weekend dates (Saturdays/Sundays) inherit preceding Friday's NAV
-  const sortedAsc = [...history].sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
-  const dateNavMap = new Map<string, number>();
-
-  sortedAsc.forEach(pt => {
-    const yyyy = pt.parsedDate.getFullYear();
-    const mm = String(pt.parsedDate.getMonth() + 1).padStart(2, '0');
-    const dd = String(pt.parsedDate.getDate()).padStart(2, '0');
-    dateNavMap.set(`${yyyy}-${mm}-${dd}`, pt.nav);
-  });
-
-  const newestDate = new Date(sortedAsc[sortedAsc.length - 1].parsedDate);
-  const oldestDate = new Date(sortedAsc[0].parsedDate);
-
-  const fullDailyData: { dateStr: string; parsedDate: Date; nav: number; isWeekend: boolean }[] = [];
-  let curr = new Date(newestDate);
-  let lastKnownNav = sortedAsc[sortedAsc.length - 1].nav;
-
-  while (curr.getTime() >= oldestDate.getTime() && fullDailyData.length < (limit * 2)) {
-    const yyyy = curr.getFullYear();
-    const mm = String(curr.getMonth() + 1).padStart(2, '0');
-    const dd = String(curr.getDate()).padStart(2, '0');
-    const key = `${yyyy}-${mm}-${dd}`;
-
-    if (dateNavMap.has(key)) {
-      lastKnownNav = dateNavMap.get(key)!;
-    }
-
-    const dayOfWeek = curr.getDay();
-    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-
-    fullDailyData.push({
-      dateStr: key,
-      parsedDate: new Date(curr),
-      nav: lastKnownNav,
-      isWeekend
-    });
-
-    curr.setDate(curr.getDate() - 1);
-  }
-
-  const getPastNavAtDays = (fromIndex: number, days: number): number | null => {
-    const fromTime = fullDailyData[fromIndex].parsedDate.getTime();
-    const targetTime = fromTime - days * 24 * 60 * 60 * 1000;
-
-    for (let j = fromIndex + 1; j < fullDailyData.length; j++) {
-      if (fullDailyData[j].parsedDate.getTime() <= targetTime) {
-        return fullDailyData[j].nav;
-      }
-    }
-    return fullDailyData[fullDailyData.length - 1]?.nav || null;
+function errorFund(schemeCode: number, message: string, name?: string): PinnedFund {
+  return {
+    schemeCode,
+    schemeName: name || `Scheme ${schemeCode}`,
+    isin: '-',
+    amc: '-',
+    category: '-',
+    schemeType: '-',
+    launchDate: '-',
+    latestNav: 0,
+    navAsOf: '-',
+    latestNavDate: null,
+    prevNav: null,
+    dayChange: null,
+    dayChangePct: null,
+    isStale: false,
+    historicalData: [],
+    historyAsc: [],
+    return7d: null,
+    return15d: null,
+    return30d: null,
+    return7dAnn: null,
+    return15dAnn: null,
+    return30dAnn: null,
+    return3m: null,
+    return6m: null,
+    return1y: null,
+    return3y: null,
+    return5y: null,
+    returnSinceStart: null,
+    volatility1y: null,
+    maxDrawdown1y: null,
+    loadError: message
   };
+}
+
+/** Turn a raw mfapi response into a fully computed fund. Exported for tests. */
+export function buildFund(json: MFDetailResponse, schemeCode: number, now = new Date()): PinnedFund {
+  const meta = json.meta || ({} as MFDetailResponse['meta']);
+  const rawData = Array.isArray(json.data) ? json.data : [];
+
+  // Parse, drop bad/zero NAVs, de-duplicate dates (keep the last one listed).
+  const byDate = new Map<string, NavHistoryPoint>();
+  for (const d of rawData) {
+    const nav = parseFloat(d.nav);
+    const parsedDate = parseAMFIDate(d.date);
+    if (!(nav > 0) || isNaN(parsedDate.getTime())) continue;
+    if (!byDate.has(d.date)) byDate.set(d.date, { date: d.date, nav, parsedDate });
+  }
+  const historyAsc = Array.from(byDate.values()).sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
+
+  if (historyAsc.length === 0) {
+    return errorFund(schemeCode, 'AMFI returned no NAV history for this scheme', meta.scheme_name);
+  }
+
+  const historicalData = [...historyAsc].reverse();
+  const latest = historyAsc[historyAsc.length - 1];
+  const prev = historyAsc.length > 1 ? historyAsc[historyAsc.length - 2] : null;
+  const first = historyAsc[0];
+  const endT = latest.parsedDate.getTime();
+
+  const pr = (days: number) => periodReturn(historyAsc, endT, days);
+  const r7 = pr(7);
+  const r15 = pr(15);
+  const r30 = pr(30);
+  const r1y = pr(365);
+  const r3y = pr(365 * 3);
+  const r5y = pr(365 * 5);
+  const sinceDays = daysBetween(first.parsedDate, latest.parsedDate);
+  const risk = riskStats(historyAsc, endT - 365 * DAY_MS, endT);
+
+  const r2 = (v: number | null | undefined) => (v === null || v === undefined ? null : round(v, 2));
+
+  return {
+    schemeCode: meta.scheme_code || schemeCode,
+    schemeName: meta.scheme_name || `Scheme ${schemeCode}`,
+    isin: meta.isin_growth || meta.isin_div_reinvestment || '-',
+    amc: meta.fund_house || '-',
+    category: meta.scheme_category || '-',
+    schemeType: meta.scheme_type || '-',
+    launchDate: formatDateDisplay(first.parsedDate),
+    latestNav: latest.nav,
+    navAsOf: formatDateDisplay(latest.parsedDate),
+    latestNavDate: latest.parsedDate,
+    prevNav: prev ? prev.nav : null,
+    dayChange: prev ? round(latest.nav - prev.nav, 4) : null,
+    dayChangePct: prev ? r2(((latest.nav - prev.nav) / prev.nav) * 100) : null,
+    isStale: daysBetween(latest.parsedDate, now) > 5,
+    historicalData,
+    historyAsc,
+    return7d: r2(r7?.absolute),
+    return15d: r2(r15?.absolute),
+    return30d: r2(r30?.absolute),
+    return7dAnn: r2(r7?.annualised),
+    return15dAnn: r2(r15?.annualised),
+    return30dAnn: r2(r30?.annualised),
+    return3m: r2(pr(91)?.absolute),
+    return6m: r2(pr(182)?.absolute),
+    return1y: r2(r1y?.absolute),
+    return3y: r2(r3y?.annualised),
+    return5y: r2(r5y?.annualised),
+    returnSinceStart: sinceDays >= 365 ? r2(cagrPct(first.nav, latest.nav, sinceDays)) : null,
+    volatility1y: r2(risk?.volatility),
+    maxDrawdown1y: r2(risk?.maxDrawdown)
+  };
+}
+
+/** Fetch & compute a fund. Results are cached for 15 minutes; pass force=true to bypass. */
+export async function fetchFundDetail(schemeCode: number, force = false): Promise<PinnedFund> {
+  const cached = fundDetailsCache.get(schemeCode);
+  if (!force && cached && Date.now() - cached.at < CACHE_TTL_MS && !cached.fund.loadError) {
+    return cached.fund;
+  }
+  try {
+    const json: MFDetailResponse = await fetchJSON(`${API_BASE}/${schemeCode}`);
+    const fund = buildFund(json, schemeCode);
+    fundDetailsCache.set(schemeCode, { fund, at: Date.now() });
+    return fund;
+  } catch (err: any) {
+    console.warn(`Failed to load scheme ${schemeCode}`, err);
+    // Keep showing the last good copy if we have one.
+    if (cached && !cached.fund.loadError) return cached.fund;
+    return errorFund(schemeCode, err?.name === 'AbortError' ? 'Request timed out' : 'Network error while loading');
+  }
+}
+
+/** Daily rows (weekends/holidays carry the previous NAV) with rolling returns. Newest first. */
+export function generateAMCNAVRows(fund: PinnedFund, limit = 100): GranularNAVRow[] {
+  const asc = fund.historyAsc;
+  if (asc.length === 0 || !fund.latestNavDate) return [];
+  const toT = endOfDay(fund.latestNavDate);
+  // One extra day so the oldest displayed row still has an "opening" NAV.
+  const fromT = toT - limit * DAY_MS;
+  const days = dailyCarryForward(asc, fromT, toT).filter(d => d.nav !== undefined);
 
   const rows: GranularNAVRow[] = [];
-  const displayLimit = Math.min(fullDailyData.length, limit);
-
-  for (let i = 0; i < displayLimit; i++) {
-    const current = fullDailyData[i];
-    const prev = fullDailyData[i + 1] || current;
-
-    const closingNav = current.nav;
-    const openingNav = prev.nav;
-    const delta = Math.round((closingNav - openingNav) * 10000) / 10000;
-    const deltaPercent = openingNav > 0 ? Math.round((delta / openingNav) * 100 * 10000) / 10000 : 0;
-
-    const nav7d = getPastNavAtDays(i, 7);
-    const nav15d = getPastNavAtDays(i, 15);
-    const nav30d = getPastNavAtDays(i, 30);
-
-    const rollingReturn7d = nav7d && nav7d > 0 ? Math.round(((closingNav - nav7d) / nav7d) * 100 * 100) / 100 : 0;
-    const rollingReturn15d = nav15d && nav15d > 0 ? Math.round(((closingNav - nav15d) / nav15d) * 100 * 100) / 100 : 0;
-    const rollingReturn30d = nav30d && nav30d > 0 ? Math.round(((closingNav - nav30d) / nav30d) * 100 * 100) / 100 : 0;
-
-    const rollingReturn7dAnn = calculateAnnualizedReturn(rollingReturn7d, 7) ?? 0;
-    const rollingReturn15dAnn = calculateAnnualizedReturn(rollingReturn15d, 15) ?? 0;
-    const rollingReturn30dAnn = calculateAnnualizedReturn(rollingReturn30d, 30) ?? 0;
-
-    const formattedDate = formatDateDisplay(current.parsedDate);
-
+  for (let i = days.length - 1; i >= 1 && rows.length < limit; i--) {
+    const cur = days[i];
+    const prev = days[i - 1];
+    const closing = cur.nav!;
+    const opening = prev.nav!;
+    const delta = round(closing - opening, 4);
+    const t = endOfDay(cur.date);
+    const r7 = periodReturn(asc, t, 7);
+    const r15 = periodReturn(asc, t, 15);
+    const r30 = periodReturn(asc, t, 30);
+    const r2 = (v: number | undefined) => (v === undefined ? null : round(v, 2));
     rows.push({
-      id: `${fund.schemeCode}-${current.dateStr}`,
+      id: `${fund.schemeCode}-${cur.iso}`,
       fundName: fund.schemeName,
-      date: formattedDate,
-      nav: closingNav,
-      openingNav,
-      closingNav,
+      date: formatDateDisplay(cur.date),
+      iso: cur.iso,
+      isCarried: cur.carried,
+      nav: closing,
+      openingNav: opening,
+      closingNav: closing,
       delta,
-      deltaPercent,
-      rollingReturn7d,
-      rollingReturn15d,
-      rollingReturn30d,
-      rollingReturn7dAnn,
-      rollingReturn15dAnn,
-      rollingReturn30dAnn
+      deltaPercent: opening > 0 ? round(((closing - opening) / opening) * 100, 4) : 0,
+      rollingReturn7d: r2(r7?.absolute),
+      rollingReturn15d: r2(r15?.absolute),
+      rollingReturn30d: r2(r30?.absolute),
+      rollingReturn7dAnn: r2(r7?.annualised),
+      rollingReturn15dAnn: r2(r15?.annualised),
+      rollingReturn30dAnn: r2(r30?.annualised)
     });
   }
-
   return rows;
 }
 
-export function calculateRankings(pinnedFunds: PinnedFund[]): RankingRow[] {
-  if (pinnedFunds.length === 0) return [];
-
-  const sortedByReturn = [...pinnedFunds].sort((a, b) => b.return30d - a.return30d);
-  const returnRankMap = new Map<number, number>();
-  sortedByReturn.forEach((f, idx) => returnRankMap.set(f.schemeCode, idx + 1));
-
-  const rowsWithScores = pinnedFunds.map(fund => {
-    const returnRank = returnRankMap.get(fund.schemeCode) || pinnedFunds.length;
-    const score = returnRank;
-
-    return {
-      schemeCode: fund.schemeCode,
-      fundName: fund.schemeName,
-      isin: fund.isin,
-      amc: fund.amc,
-      latestNav: fund.latestNav,
-      navAsOf: fund.navAsOf,
-      return30d: fund.return30d,
-      returnRank,
-      overallScore: Math.round(score * 100) / 100,
-      overallRank: 0
-    };
-  });
-
-  rowsWithScores.sort((a, b) => a.overallScore - b.overallScore);
-  rowsWithScores.forEach((r, idx) => {
-    r.overallRank = idx + 1;
-  });
-
-  return rowsWithScores;
+/** NAV on or before a YYYY-MM-DD date. */
+export function getNavOnDate(fund: PinnedFund, targetISO: string): { nav: number; date: string; parsedDate: Date } | null {
+  if (!targetISO || fund.historyAsc.length === 0) return null;
+  const target = parseISODate(targetISO);
+  if (isNaN(target.getTime())) return null;
+  const idx = findOnOrBefore(fund.historyAsc, endOfDay(target));
+  if (idx < 0) return null;
+  const pt = fund.historyAsc[idx];
+  return { nav: pt.nav, date: formatDateDisplay(pt.parsedDate), parsedDate: pt.parsedDate };
 }
-
-// Target date historical lookup helper
-// targetDate is a YYYY-MM-DD string from the date picker
-export function getNavOnDate(fund: PinnedFund, targetDate: string): { nav: number; date: string } | null {
-  if (!targetDate || fund.historicalData.length === 0) return null;
-
-  // Parse YYYY-MM-DD as local date (not UTC) to avoid off-by-one timezone issues
-  const [year, month, day] = targetDate.split('-').map(Number);
-  const targetLocal = new Date(year, month - 1, day);
-  const targetTime = targetLocal.getTime();
-
-  if (isNaN(targetTime)) return null;
-
-  // historical is sorted newest-first — find the closest date ON or BEFORE targetDate
-  for (let i = 0; i < fund.historicalData.length; i++) {
-    const item = fund.historicalData[i];
-    if (item.parsedDate.getTime() <= targetTime) {
-      return { nav: item.nav, date: formatDateDisplay(item.date) };
-    }
-  }
-
-  return null;
-}
-
-export function interpolateMissingData(
-  chartData: any[],
-  fundNames: string[]
-): any[] {
-  if (chartData.length === 0 || fundNames.length === 0) return chartData;
-
-  // We operate on a copy of chartData to avoid direct mutation issues
-  const data = chartData.map(row => ({ ...row }));
-
-  fundNames.forEach(name => {
-    for (let i = 0; i < data.length; i++) {
-      if (data[i][name] === undefined || data[i][name] === null) {
-        // Find prev index with value
-        let prevIdx = -1;
-        for (let j = i - 1; j >= 0; j--) {
-          if (data[j][name] !== undefined && data[j][name] !== null) {
-            prevIdx = j;
-            break;
-          }
-        }
-
-        // Find next index with value
-        let nextIdx = -1;
-        for (let j = i + 1; j < data.length; j++) {
-          if (data[j][name] !== undefined && data[j][name] !== null) {
-            nextIdx = j;
-            break;
-          }
-        }
-
-        if (prevIdx !== -1 && nextIdx !== -1) {
-          const prevTime = data[prevIdx].parsedDate.getTime();
-          const nextTime = data[nextIdx].parsedDate.getTime();
-          const currTime = data[i].parsedDate.getTime();
-          const prevVal = data[prevIdx][name];
-          const nextVal = data[nextIdx][name];
-
-          if (nextTime === prevTime) {
-            data[i][name] = prevVal;
-          } else {
-            const interpolated = prevVal + (nextVal - prevVal) * (currTime - prevTime) / (nextTime - prevTime);
-            data[i][name] = Math.round(interpolated * 10000) / 10000;
-          }
-        } else if (prevIdx !== -1) {
-          data[i][name] = data[prevIdx][name];
-        } else if (nextIdx !== -1) {
-          data[i][name] = data[nextIdx][name];
-        }
-      }
-    }
-  });
-
-  return data;
-}
-

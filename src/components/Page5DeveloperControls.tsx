@@ -50,7 +50,7 @@ export const Page5DeveloperControls: React.FC<Page5Props> = ({
         </p>
       </div>
 
-      <div className="panel-grid-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '20px' }}>
+      <div className="panel-grid-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(360px, 100%), 1fr))', gap: '20px' }}>
         {/* API Credentials Card */}
         <div className="card-panel">
           <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>

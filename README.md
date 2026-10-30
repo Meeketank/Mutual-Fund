@@ -1,0 +1,23 @@
+# AMFI Mutual Fund Analytics
+
+Live NAVs, returns, rankings and side-by-side comparison for Indian mutual funds (data: AMFI via [mfapi.in](https://www.mfapi.in)).
+
+```bash
+npm install
+npm run dev     # http://localhost:3000
+npm test        # calculation tests (uses real AMFI NAV fixtures)
+npm run build
+```
+
+## How numbers are calculated
+
+- "NAV on a date" = latest published NAV on or before that date.
+- Returns under 1 year: absolute %, and simple annualised (`abs% × 365 / days`), the SEBI convention.
+- 1 year and above: CAGR. Day counts are real calendar days between the two NAV dates.
+- If a fund's history doesn't reach back far enough, the value shows "—" instead of a fake 0%.
+- Weekends/holidays carry forward the previous business day's NAV (shown in grey in tables).
+- Charts: all funds share one date grid. Lines are drawn smoothly (monotone curve, no overshoot) through each fund's real NAV days on a true time axis; on days a fund didn't publish, tooltips show its last NAV marked `*`. No values are interpolated.
+- Chart interaction (shared `ChartToolkit`): tap/click a point to lock it (step with ◀ ▶ or arrow keys), drag across the chart to zoom, + / − zoom around the selection, pan, presets and a two-handle date slider. The Y axis fits the visible window, and a summary shows start → end, change, high and low.
+- SIP: monthly instalment bought at the first NAV on/after each date; XIRR via Newton's method with bisection fallback.
+
+All formulas live in `src/services/calc.ts` and are covered by `src/services/calc.test.ts`.
